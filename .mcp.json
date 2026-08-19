@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "honeycomb": {
+      "command": "node",
+      "args": ["server/mcp.mjs"],
+      "env": {}
+    }
+  }
+}

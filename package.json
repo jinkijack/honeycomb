@@ -1,0 +1,28 @@
+{
+  "name": "honeycomb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Colmeia de agentes: orquestra CLIs (Claude Code, Kiro, Codex) como executores de tarefas em worktrees isolados",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "mcp": "node server/mcp.mjs",
+    "web": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "setup": "npm install && npm --prefix web install"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "bin": {
+    "honeycomb": "./bin/honeycomb.mjs",
+    "hc": "./bin/honeycomb.mjs",
+    "honeycomb-mcp": "./server/mcp.mjs"
+  }
+}

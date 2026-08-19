@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+/**
+ * Hiberbee Dark palette, extracted from the plugin itself
+ * (themes/HiberbeeDark.theme.json and colors/Dark.xml). Nothing here is an
+ * approximation: these are the values the IDE uses.
+ *
+ * The theme was already honey-coloured before we asked — warm greys over a wax
+ * background, accent #ffb900. That is why the names follow the hive rather than
+ * "gray/primary":
+ *
+ *   comb   the structure — backgrounds and cell walls (dark1..dark8)
+ *   wax    the wax — text scale, from warm white to faded (light10..light1)
+ *   honey  the brand accent (#ffb900)
+ *
+ * The semantic colours come from the theme's syntax highlighting, so a green run
+ * on screen is the same green as a function in the editor.
+ */
+@theme {
+  --color-comb-950: #070605;
+  --color-comb-900: #121110;
+  --color-comb-850: #171615;
+  --color-comb-800: #222120;
+  --color-comb-700: #272625;
+  --color-comb-600: #323130;
+  --color-comb-500: #424140;
+  --color-comb-400: #525150;
+
+  --color-wax-50:  #fffefd;
+  --color-wax-100: #efeeed;
+  --color-wax-200: #dfdedd;
+  --color-wax-300: #cfcecd;
+  --color-wax-400: #bfbebd;
+  --color-wax-500: #afaead;
+  --color-wax-600: #9f9e9d;
+  --color-wax-700: #8f8e8d;
+  --color-wax-800: #7f7e7d;
+  --color-wax-900: #6f6e6d;
+
+  --color-honey: #ffb900;
+  --color-honey-soft: #f5d277;
+  --color-nectar: #ffd866;
+
+  /* semantic, all taken from Hiberbee's syntax highlighting */
+  --color-pollen: #92d923;   /* function declaration */
+  --color-azure: #409cff;    /* blue */
+  --color-ember: #ff5454;    /* red */
+  --color-coral: #ee7762;    /* keyword   → Claude Code */
+  --color-lavender: #b6b3eb; /* identifier → Kiro CLI */
+  --color-peach: #ee9b70;    /* parameter */
+  --color-ice: #57d1eb;      /* class name */
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  background: var(--color-comb-950);
+  color: var(--color-wax-200);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/**
+ * The cell.
+ *
+ * State marker for every run, step and tool. It is hexagonal because the
+ * product's unit of work is literally an isolated cell — a worktree — and
+ * repeating that shape is what makes the screen read as a comb without needing
+ * any illustration.
+ */
+.cell {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+}
+
+/* Comb texture: only where there is no content, so it never competes with data. */
+.comb-texture {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='96' viewBox='0 0 56 96'%3E%3Cg fill='none' stroke='%23ffb900' stroke-width='1'%3E%3Cpath d='M28 0 L56 16 L56 48 L28 64 L0 48 L0 16 Z'/%3E%3Cpath d='M28 64 L56 80 L56 112 L28 128 L0 112 L0 80 Z'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 56px 96px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-comb-600);
+  border-radius: 6px;
+  border: 2px solid var(--color-comb-950);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-comb-500); }
+
+::selection { background: color-mix(in srgb, var(--color-honey) 30%, transparent); }
+
+:focus-visible {
+  outline: 2px solid var(--color-honey);
+  outline-offset: 2px;
+}
+
+/* Active-cell pulse: honey "fills" the hexagon while the agent works. */
+@keyframes pulse-cell {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.82); }
+}
+.animate-dot { animation: pulse-cell 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-dot { animation: none; opacity: 0.75; }
+}

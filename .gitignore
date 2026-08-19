@@ -1,0 +1,17 @@
+node_modules/
+web/dist/
+
+# Local daemon state: prompts, agent output and paths from your machine.
+# None of this should ever leave your disk.
+data/
+worktrees/
+
+# Editor config belongs to whoever edits, not to the project.
+.idea/
+.vscode/
+
+# Local Claude Code permissions (the project skill ships, this does not).
+.claude/settings.local.json
+
+*.log
+.DS_Store
