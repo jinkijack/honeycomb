@@ -135,7 +135,7 @@ export const codex = {
     return sessions;
   },
 
-  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, onEvent, timeoutMs }) {
+  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, mcpServers, env, onEvent, timeoutMs }) {
     const sandbox = SANDBOX[mode] || SANDBOX.ro;
     const resuming = !!(resume && sessionId);
 
@@ -155,6 +155,19 @@ export const codex = {
     args.push('--json', '--skip-git-repo-check');
     if (model) args.push('--model', model);
     if (!resuming) args.push('--sandbox', sandbox, '-C', cwd);
+
+    /**
+     * Codex has no `--mcp-config`; it takes config overrides whose value is
+     * parsed as TOML, which is enough to declare a server inline. Written as
+     * separate `-c` pairs because a single nested table override is not accepted.
+     */
+    for (const [name, cfg] of Object.entries(mcpServers || {})) {
+      args.push('-c', `mcp_servers.${name}.command=${JSON.stringify(cfg.command)}`);
+      if (cfg.args?.length) {
+        args.push('-c', `mcp_servers.${name}.args=${JSON.stringify(cfg.args)}`);
+      }
+    }
+
     if (resuming) args.push(sessionId);
     args.push(prompt);
 
@@ -162,7 +175,7 @@ export const codex = {
       cwd,
       // stdin closed: with stdin open Codex sits waiting for extra input
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NO_COLOR: '1' },
+      env: { ...process.env, ...(env || {}), NO_COLOR: '1' },
     });
 
     let sid = sessionId || null;

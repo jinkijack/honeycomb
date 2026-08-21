@@ -15,6 +15,7 @@ export const api = {
   tools: (cwd) => req('GET', `/api/tools?cwd=${encodeURIComponent(cwd || '')}`),
   repo: (p) => req('GET', `/api/repo?path=${encodeURIComponent(p)}`),
   models: (tool) => req('GET', `/api/models${tool ? `?tool=${encodeURIComponent(tool)}` : ''}`),
+  browsers: (tool) => req('GET', `/api/browsers${tool ? `?tool=${encodeURIComponent(tool)}` : ''}`),
 
   runs: () => req('GET', '/api/runs'),
   run: (id) => req('GET', `/api/runs/${id}`),

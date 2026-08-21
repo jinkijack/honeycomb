@@ -87,6 +87,10 @@ export async function startRun({
   label,
   taskId = null,
   stepId = null,
+  // extra MCP servers and environment for this run only (the QA stage uses both:
+  // a browser server, and the ports it is allowed to bind)
+  mcpServers = null,
+  env = null,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   budgetOverride = null,
 }) {
@@ -165,7 +169,8 @@ export async function startRun({
     // only transient failures are retried; failures on the merits pass through
     for (let attempt = 1; attempt <= TRANSIENT_RETRIES + 1; attempt++) {
       const spawned = adapter.run({
-        prompt, cwd: workdir, sessionId: sid, resume, mode, model, effort, onEvent, timeoutMs,
+        prompt, cwd: workdir, sessionId: sid, resume, mode, model, effort,
+        mcpServers, env, onEvent, timeoutMs,
       });
 
       active.set(runId, spawned.child);
@@ -196,7 +201,7 @@ export async function startRun({
     let diff = null;
     if (wt) {
       try {
-        diff = await worktreeDiff(wt.dir);
+        diff = await worktreeDiff(wt.dir, { baseSha: wt.baseSha });
       } catch (err) {
         emit(runId, { type: 'log', tool, text: `falha lendo diff: ${err.message}` });
       }
@@ -259,7 +264,9 @@ export function isActive(runId) {
 export async function getRunDiff(runId, { full = false } = {}) {
   const run = runs.get(runId);
   if (!run?.worktree) return null;
-  const diff = await worktreeDiff(run.worktree.dir);
+  // against the sha the worktree started from, so the diff still describes the
+  // agent's work after the agent commits it
+  const diff = await worktreeDiff(run.worktree.dir, { baseSha: run.worktree.baseSha });
   return full ? diff : { stat: diff.stat, files: diff.files };
 }
 

@@ -70,7 +70,7 @@ export const claude = {
     }
   },
 
-  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, effort, onEvent, timeoutMs }) {
+  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, effort, mcpServers, env, onEvent, timeoutMs }) {
     const sid = sessionId || randomUUID();
     const args = [
       '-p',
@@ -82,7 +82,28 @@ export const claude = {
     if (resume) args.push('--resume', sid);
     else args.push('--session-id', sid);
 
-    args.push(...(PERMISSION[mode] || PERMISSION.ro));
+    const permission = [...(PERMISSION[mode] || PERMISSION.ro)];
+
+    /**
+     * Extra MCP servers for this run (the browser the QA stage drives, today).
+     *
+     * `--mcp-config` takes JSON inline, so there is no temp file to create and
+     * clean up. It is additive on purpose — `--strict-mcp-config` would hide the
+     * target repo's own `.mcp.json`, and the agent may legitimately need it.
+     *
+     * The restricted modes work from an allow-list, and an MCP tool not named in
+     * it is simply never offered — so the servers have to be added there too, or
+     * injecting them would be a silent no-op.
+     */
+    if (mcpServers && Object.keys(mcpServers).length) {
+      args.push('--mcp-config', JSON.stringify({ mcpServers }));
+      const at = permission.indexOf('--allowed-tools');
+      if (at >= 0) {
+        permission.splice(at + 1, 0, ...Object.keys(mcpServers).map((n) => `mcp__${n}`));
+      }
+    }
+
+    args.push(...permission);
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
     args.push(prompt);
@@ -90,7 +111,7 @@ export const claude = {
     const child = spawn(BIN.claude, args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, ...(env || {}), FORCE_COLOR: '0' },
     });
 
     let finalText = '';

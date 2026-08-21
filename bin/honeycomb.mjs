@@ -85,6 +85,8 @@ const OPTIONS = {
   // with a value
   age: { type: 'string' },
   agents: { type: 'string' },
+  'base-url': { type: 'string' },
+  browser: { type: 'string' },
   days: { type: 'string' },
   effort: { type: 'string' },
   impl: { type: 'string' },
@@ -96,10 +98,16 @@ const OPTIONS = {
   message: { type: 'string', short: 'm' },
   mode: { type: 'string' },
   model: { type: 'string' },
+  notes: { type: 'string' },
   prompt: { type: 'string' },
+  'qa-rounds': { type: 'string' },
   repo: { type: 'string' },
+  rounds: { type: 'string' },
   session: { type: 'string' },
   spec: { type: 'string' },
+  'start-cmd': { type: 'string' },
+  tester: { type: 'string' },
+  'tester-model': { type: 'string' },
   title: { type: 'string' },
   tool: { type: 'string' },
   validator: { type: 'string' },
@@ -110,10 +118,16 @@ const OPTIONS = {
   full: { type: 'boolean' },
   'include-dirty': { type: 'boolean' },
   json: { type: 'boolean' },
+  'no-commit': { type: 'boolean' },
+  qa: { type: 'boolean' },
   quiet: { type: 'boolean' },
   resume: { type: 'boolean' },
   wait: { type: 'boolean' },
 };
+
+/** A `--flag value` that was given without a value parses as `true`, not a string. */
+const str = (v) => (typeof v === 'string' && v.length ? v : undefined);
+const num = (v) => (typeof v === 'string' && v.length ? Number(v) : undefined);
 
 function parseArgs(argv) {
   try {
@@ -325,7 +339,7 @@ const commands = {
 
   async cross({ pos, flags }) {
     const spec = flags.spec || pos.join(' ');
-    if (!spec) err('uso: honeycomb cross "<especificação>" [--impl kiro] [--validator claude] [--wait]');
+    if (!spec) err('uso: honeycomb cross "<especificação>" [--impl kiro] [--validator claude] [--qa] [--wait]');
 
     const task = await call('POST', '/api/tasks/cross-validation', {
       title: flags.title || oneLine(spec, 60),
@@ -333,12 +347,23 @@ const commands = {
       spec,
       implementer: flags.impl || 'kiro',
       validator: flags.validator || 'claude',
-      implementerModel: flags['impl-model'] !== true ? flags['impl-model'] : undefined,
-      validatorModel: flags['validator-model'] !== true ? flags['validator-model'] : undefined,
+      implementerModel: str(flags['impl-model']),
+      validatorModel: str(flags['validator-model']),
+      maxRounds: num(flags.rounds),
       // --verify "cmd1;cmd2" overrides the default verification commands
       verifyCommands: flags.verify && flags.verify !== true
         ? String(flags.verify).split(';').map((s) => s.trim()).filter(Boolean)
         : undefined,
+      // --qa appends the test stage: boots the project and exercises what changed
+      qa: !!flags.qa,
+      tester: str(flags.tester),
+      testerModel: str(flags['tester-model']),
+      qaBrowser: str(flags.browser),
+      qaMaxRounds: num(flags['qa-rounds']),
+      startCommand: str(flags['start-cmd']),
+      baseUrl: str(flags['base-url']),
+      qaNotes: str(flags.notes),
+      autoCommit: !flags['no-commit'],
       autoRun: true,
     });
 
@@ -531,6 +556,18 @@ ${c.bold('orquestração')}
   task <arquivo.json|->                     grafo arbitrário de passos
   tasks / status <taskId>                   lista / acompanha
 
+${c.bold('etapa de QA')} ${c.dim('(opcional, no cross)')}
+  --qa                    liga a etapa: sobe o projeto e executa o que mudou
+  --tester X              agente testador (padrão: claude)
+  --tester-model M        modelo do testador
+  --browser B             agent-browser (padrão, via shell) | chrome-devtools | none
+  --start-cmd "<cmd>"     como subir o projeto (senão o agente descobre)
+  --base-url <url>        onde a aplicação responde
+  --notes "<texto>"       observações suas para o testador
+  --qa-rounds N           rodadas de correção do QA (padrão 2)
+  --rounds N              rodadas de correção da revisão (padrão 2)
+  --no-commit             não commitar automaticamente na branch do worktree
+
 ${c.bold('opções comuns')}
   --wait          bloqueia até terminar (eventos em stderr, resultado em stdout)
   --json          saída estruturada
@@ -552,6 +589,8 @@ function printTaskSummary(task) {
     const v = s.verdict ? (s.verdict === 'APROVADO' ? c.green(` ${s.verdict}`) : c.red(` ${s.verdict}`)) : '';
     console.log(`  ${tint('◆')} ${s.id.padEnd(10)} ${s.tool.padEnd(7)} ${s.status}${v}`);
     if (s.runId) console.log(c.dim(`    run ${s.runId}`));
+    if (s.commit?.sha) console.log(c.dim(`    commit ${s.commit.sha.slice(0, 8)}`));
+    if (s.note) console.log(c.yellow(`    ${s.note}`));
   }
 }
 
@@ -571,7 +610,8 @@ if (!handler) {
   process.exit(EXIT.USAGE);
 }
 
-handler(parseArgs(argv)).catch((err) => {
+// help is synchronous: wrap so a non-Promise return does not blow up the chain
+Promise.resolve(handler(parseArgs(argv))).catch((err) => {
   console.error(e.red(`erro: ${err.message}`));
   process.exit(EXIT.FAILED);
 });

@@ -54,9 +54,19 @@ export async function createWorktree(repo, { name, baseRef, linkDeps = true } = 
 
   await git(root, ['worktree', 'add', '-b', branch, dir, base]);
 
+  /**
+   * The commit the branch started from.
+   *
+   * Agents now commit their own work inside the worktree, which makes `diff HEAD`
+   * useless for answering "what did the agent change?" — after the first commit it
+   * returns nothing. Pinning the starting sha lets `worktreeDiff` answer that
+   * question regardless of how many commits the agent made along the way.
+   */
+  const baseSha = (await git(dir, ['rev-parse', 'HEAD'])).trim();
+
   const linked = linkDeps ? linkDependencies(root, dir) : [];
 
-  return { id, dir, branch, base, repo: root, linked, createdAt: Date.now() };
+  return { id, dir, branch, base, baseSha, repo: root, linked, createdAt: Date.now() };
 }
 
 /**
@@ -127,8 +137,15 @@ export async function listWorktrees(repo) {
   return entries;
 }
 
-/** Complete diff of an agent's work, including new files. */
-export async function worktreeDiff(dir) {
+/**
+ * Complete diff of an agent's work, including new files.
+ *
+ * `baseSha` decides which question is being asked. With it, the answer is "what
+ * did the agent change since the worktree was created", which survives the agent
+ * committing its own work. Without it, the answer is "what is uncommitted right
+ * now" — which is what the garbage collector needs and the orchestrator does not.
+ */
+export async function worktreeDiff(dir, { baseSha = null } = {}) {
   if (!fs.existsSync(dir)) return { stat: '', patch: '', files: [] };
 
   /**
@@ -164,10 +181,18 @@ export async function worktreeDiff(dir) {
     { maxBuffer: 8 * 1024 * 1024 }
   ).catch(() => {});
 
+  // a sha recorded by a previous daemon may no longer resolve (branch pruned,
+  // repo re-cloned); falling back to HEAD degrades the answer without failing it
+  let from = 'HEAD';
+  if (baseSha) {
+    const ok = await git(dir, ['cat-file', '-e', `${baseSha}^{commit}`]).then(() => true).catch(() => false);
+    if (ok) from = baseSha;
+  }
+
   const [stat, patch, nameStatus] = await Promise.all([
-    git(dir, ['diff', '--stat', 'HEAD']).catch(() => ''),
-    git(dir, ['diff', 'HEAD']).catch(() => ''),
-    git(dir, ['diff', '--name-status', 'HEAD']).catch(() => ''),
+    git(dir, ['diff', '--stat', from]).catch(() => ''),
+    git(dir, ['diff', from]).catch(() => ''),
+    git(dir, ['diff', '--name-status', from]).catch(() => ''),
   ]);
 
   const files = nameStatus
@@ -240,11 +265,57 @@ export async function findLandedIn(worktreeDir, files, { maxRefs = 80 } = {}) {
   return null;
 }
 
+/**
+ * Lines that must never reach a commit message.
+ *
+ * Attribution trailers are added by habit by every coding agent, and they end up
+ * in the history of a repository that never asked for them. Stripping them here
+ * rather than only asking the agent nicely means the rule holds even when the
+ * message comes from the agent's own `git commit`.
+ */
+const BANNED_TRAILERS = [
+  /^\s*co-authored-by:/i,
+  /^\s*(🤖\s*)?generated with\b/i,
+  /^\s*assisted-by:/i,
+  /^\s*signed-off-by:\s*claude/i,
+];
+
+export function sanitizeMessage(message) {
+  const clean = String(message || '')
+    .split('\n')
+    .filter((line) => !BANNED_TRAILERS.some((re) => re.test(line)))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return clean || 'honeycomb: alteracoes do agente';
+}
+
+/**
+ * Refuses to commit anywhere but on the agent's own branch.
+ *
+ * The whole isolation guarantee rests on the agent's work landing on
+ * `honeycomb/<id>` and nowhere else. An agent that runs `git checkout main`
+ * inside its worktree breaks that silently — the commit would look normal and
+ * land on the user's branch. Checking the branch at commit time is the one place
+ * that catches it regardless of how the checkout happened.
+ */
+export async function assertAgentBranch(dir) {
+  const branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+  if (!branch.startsWith('honeycomb/')) {
+    throw new Error(
+      `worktree esta na branch "${branch}", nao numa branch do honeycomb — ` +
+        'recusando commit para nao escrever na branch do projeto'
+    );
+  }
+  return branch;
+}
+
 /** Consolidates the agent's work into a commit on its own branch. */
 export async function commitWorktree(dir, message) {
+  await assertAgentBranch(dir);
   await git(dir, ['add', '-A']);
   try {
-    await git(dir, ['commit', '-m', message]);
+    await git(dir, ['commit', '--no-gpg-sign', '-m', sanitizeMessage(message)]);
   } catch (err) {
     if (/nothing to commit/i.test(err.stdout || err.message || '')) {
       return { committed: false, reason: 'nothing to commit' };

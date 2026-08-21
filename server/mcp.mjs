@@ -498,7 +498,10 @@ server.registerTool(
       'total; outra entra no MESMO worktree em modo verify, é obrigada a rodar typecheck/lint/teste, ' +
       'relatar o que executou, e termina com VEREDITO: APROVADO ou REPROVADO. Se reprovar, a crítica ' +
       'volta ao implementador, que retrabalha no worktree que já produziu, até maxRounds rodadas. ' +
-      'REPROVADO é resultado, não erro — significa que o revisor rodou a verificação e recusou.',
+      'REPROVADO é resultado, não erro — significa que o revisor rodou a verificação e recusou. ' +
+      'Com qa: true entra uma terceira etapa que sobe o projeto e executa os fluxos alterados; ' +
+      'defeito encontrado lá volta ao implementador e passa pela revisão de novo antes de ser ' +
+      'retestado. Cada passo commita na branch do próprio worktree, nunca na sua.',
     inputSchema: {
       spec: z.string().describe('O que deve ser implementado. Quanto mais preciso, menos rodadas.'),
       repo: repoArg,
@@ -511,6 +514,33 @@ server.registerTool(
         .optional()
         .describe('Comandos de verificação. Padrão: npx tsc --noEmit, npm run lint, npm test.'),
       maxRounds: z.number().int().min(0).max(5).default(2),
+      qa: z
+        .boolean()
+        .default(false)
+        .describe(
+          'Acrescenta a etapa de QA depois da revisão: um terceiro agente sobe o projeto em ' +
+            'portas reservadas, monta um plano de testes a partir do que o diff mudou e executa — ' +
+            'endpoints por HTTP, filas publicando mensagem de verdade, telas no navegador — mais a ' +
+            'regressão em volta. Custa um agente a mais e tempo de relógio; ligue quando importar ' +
+            'que a coisa funcione rodando, não só que o código esteja certo.'
+        ),
+      tester: z.enum(['claude', 'kiro', 'codex']).default('claude'),
+      testerModel: z.string().optional(),
+      qaBrowser: z
+        .enum(['agent-browser', 'chrome-devtools', 'none'])
+        .default('agent-browser')
+        .describe(
+          'Automação de navegador do testador. agent-browser é dirigido pelo shell e funciona ' +
+            'nas três ferramentas; chrome-devtools entra como servidor MCP e o kiro não o recebe.'
+        ),
+      qaMaxRounds: z.number().int().min(0).max(5).default(2),
+      startCommand: z.string().optional().describe('Como subir o projeto, se você já souber.'),
+      baseUrl: z.string().optional().describe('Onde a aplicação responde depois de subir.'),
+      qaNotes: z.string().optional().describe('O que você quer que seja testado com atenção.'),
+      autoCommit: z
+        .boolean()
+        .default(true)
+        .describe('Commita o trabalho de cada passo na branch do próprio worktree.'),
       budget: z.number().optional().describe('Teto de crédito só desta orquestração.'),
       wait: waitArg,
     },

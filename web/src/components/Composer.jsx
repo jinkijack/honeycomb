@@ -22,6 +22,17 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
   const [implModel, setImplModel] = useState('');
   const [valModel, setValModel] = useState('');
 
+  // QA stage — off by default: it costs a third agent and the wall-clock time of
+  // booting the project, which plenty of changes do not justify
+  const [qa, setQa] = useState(false);
+  const [tester, setTester] = useState('claude');
+  const [testerModel, setTesterModel] = useState('');
+  const [browsers, setBrowsers] = useState(null);
+  const [browser, setBrowser] = useState('agent-browser');
+  const [startCmd, setStartCmd] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [qaNotes, setQaNotes] = useState('');
+
   const [tool, setTool] = useState('kiro');
   const [prompt, setPrompt] = useState('');
   const [mode, setMode] = useState('ro');
@@ -32,6 +43,30 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
   useEffect(() => setModel(''), [tool]);
   useEffect(() => setImplModel(''), [implementer]);
   useEffect(() => setValModel(''), [validator]);
+  useEffect(() => setTesterModel(''), [tester]);
+
+  /**
+   * Re-resolved whenever the tester changes: what a browser choice actually
+   * becomes depends on the tool (kiro takes no MCP on the command line) and on
+   * what is installed. Showing the resolved answer here is what stops someone
+   * configuring a browser the tester will never see.
+   */
+  useEffect(() => {
+    let alive = true;
+    api
+      .browsers(tester)
+      .then((r) => {
+        if (!alive) return;
+        setBrowsers(r);
+        setBrowser((cur) => (r.browsers.some((b) => b.id === cur) ? cur : r.default));
+      })
+      .catch(() => alive && setBrowsers({ browsers: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [tester]);
+
+  const resolvedBrowser = browsers?.browsers?.find((b) => b.id === browser) || null;
 
   const available = tools.filter((t) => t.available).map((t) => t.name);
 
@@ -48,6 +83,13 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
           validator,
           implementerModel: implModel || undefined,
           validatorModel: valModel || undefined,
+          qa,
+          tester,
+          testerModel: testerModel || undefined,
+          qaBrowser: browser,
+          startCommand: startCmd || undefined,
+          baseUrl: baseUrl || undefined,
+          qaNotes: qaNotes || undefined,
           autoRun: true,
         });
         onCreated?.('task', task);
@@ -132,11 +174,91 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
               />
             </Field>
 
+            <div className="rounded-lg ring-1 ring-comb-600 ring-inset">
+              <label className="flex cursor-pointer items-start gap-2.5 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={qa}
+                  onChange={(ev) => setQa(ev.target.checked)}
+                  className="mt-0.5 accent-honey"
+                />
+                <span className="min-w-0">
+                  <span className="text-xs font-medium text-wax-100">Etapa de QA</span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-wax-700">
+                    Depois da revisão, um agente testador sobe o projeto em portas reservadas, monta um
+                    plano a partir do que mudou e executa: endpoints por HTTP, filas publicando mensagem
+                    de verdade, telas no navegador — mais a regressão em volta.
+                  </span>
+                </span>
+              </label>
+
+              {qa && (
+                <div className="space-y-3 border-t border-comb-600 px-3 py-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Testador" hint="executa o plano">
+                      <Select value={tester} onChange={(ev) => setTester(ev.target.value)}>
+                        {available.map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field
+                      label="Navegador"
+                      hint={
+                        resolvedBrowser
+                          ? { mcp: 'via MCP', cli: 'via CLI', none: 'indisponível' }[resolvedBrowser.transport]
+                          : 'para mudanças de front'
+                      }
+                    >
+                      <Select value={browser} onChange={(ev) => setBrowser(ev.target.value)}>
+                        {(browsers?.browsers || []).map((b) => (
+                          <option key={b.id} value={b.id}>{b.label}</option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <ModelPicker tool={tester} value={testerModel} onChange={setTesterModel} label="Modelo do testador" />
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Comando para subir" hint="opcional — senão ele descobre">
+                      <Input value={startCmd} onChange={(ev) => setStartCmd(ev.target.value)} placeholder="npm run dev" />
+                    </Field>
+                    <Field label="URL base" hint="opcional">
+                      <Input value={baseUrl} onChange={(ev) => setBaseUrl(ev.target.value)} placeholder="http://localhost:$PORT" />
+                    </Field>
+                  </div>
+
+                  <Field label="O que testar com atenção" hint="opcional">
+                    <Textarea
+                      rows={3}
+                      value={qaNotes}
+                      onChange={(ev) => setQaNotes(ev.target.value)}
+                      placeholder="Ex: o consumidor da fila de faturas precisa aguentar mensagem duplicada."
+                    />
+                  </Field>
+
+                  {resolvedBrowser?.note && (
+                    <p className="rounded-lg bg-peach/5 px-3 py-2 text-[11px] leading-relaxed text-peach ring-1 ring-peach/20 ring-inset">
+                      {resolvedBrowser.note}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <p className="rounded-lg bg-azure/5 px-3 py-2 text-[11px] leading-relaxed text-wax-500 ring-1 ring-azure/10 ring-inset">
               O <strong className="text-wax-300">{implementer}</strong> implementa em modo total num worktree
               isolado. Depois o <strong className="text-wax-300">{validator}</strong> entra nesse mesmo worktree
               em modo somente leitura, revisa o diff e responde <span className="font-mono">APROVADO</span> ou{' '}
-              <span className="font-mono">REPROVADO</span>. Seu working tree não é tocado.
+              <span className="font-mono">REPROVADO</span>.
+              {qa && (
+                <>
+                  {' '}Aprovado, o <strong className="text-wax-300">{tester}</strong> testa rodando; defeito que
+                  ele achar volta ao implementador e passa pela revisão de novo antes de ser retestado.
+                </>
+              )}{' '}
+              Cada passo commita na branch do próprio worktree — seu working tree não é tocado.
             </p>
           </>
         ) : (

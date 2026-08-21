@@ -92,7 +92,7 @@ export const kiro = {
     }
   },
 
-  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, effort, onEvent, timeoutMs }) {
+  run({ prompt, cwd, sessionId, resume, mode = 'ro', model, effort, mcpServers, env, onEvent, timeoutMs }) {
     const args = ['chat', '--no-interactive', ...(TRUST[mode] || TRUST.ro)];
 
     if (resume && sessionId) args.push('--resume-id', sessionId);
@@ -101,10 +101,26 @@ export const kiro = {
     if (effort) args.push('--effort', effort);
     args.push(prompt);
 
+    /**
+     * Kiro takes no MCP configuration on the command line — it reads it from
+     * agent files we do not own. Saying so out loud matters: the QA stage may be
+     * counting on a browser that will not be there, and silence would look like
+     * the agent simply chose not to use it.
+     */
+    if (mcpServers && Object.keys(mcpServers).length) {
+      onEvent({
+        type: 'log',
+        tool: 'kiro',
+        text:
+          `kiro nao aceita configuracao de MCP por linha de comando; ` +
+          `${Object.keys(mcpServers).join(', ')} nao foi injetado — use o CLI equivalente se houver`,
+      });
+    }
+
     const child = spawn(BIN.kiro, args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
+      env: { ...process.env, ...(env || {}), NO_COLOR: '1', TERM: 'dumb' },
     });
 
     const textParts = [];

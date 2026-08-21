@@ -35,6 +35,7 @@ an orchestrating agent.
 honeycomb tools                              # tools and sessions
 honeycomb run kiro "..." --mode full --wait  # fire and block
 honeycomb cross "<spec>" --wait              # implement and validate
+honeycomb cross "<spec>" --qa --wait         # ...and test it running
 honeycomb diff <runId> --full                # worktree diff
 honeycomb commit <runId>                     # commit on the agent's branch
 ```
@@ -70,6 +71,15 @@ touched, and two agents run in parallel without colliding. Dependency directorie
 (`node_modules`, `vendor`, `.venv`, `target`) are symlinked in so the agent can
 actually build and test.
 
+**Commits stay on the agent's branch.** Each step commits what it produced onto
+its own `honeycomb/<id>` branch — one commit per attempt, so a task with two
+correction rounds reads as four commits rather than one blob. Nothing reaches your
+branch until you merge or cherry-pick it. That guarantee is enforced, not
+requested: a commit is refused outright if the worktree is not on a `honeycomb/`
+branch, which catches an agent that ran `git checkout main` against the rules.
+Attribution trailers (`Co-Authored-By`, `Generated with`) are stripped from every
+message, so the history says what changed and nothing else.
+
 ## Orchestration patterns
 
 ### Cross-validation — the everyday pattern
@@ -101,6 +111,82 @@ Declare it in any graph with:
 ```json
 { "id": "review", "gate": true, "retry": { "of": "impl", "max": 2 } }
 ```
+
+### QA — optional, for when passing review is not enough
+
+The reviewer answers *is this code right*. It reads a diff and runs
+typecheck/lint/tests. It does not answer *does this work when you run it* — and
+plenty of changes pass the first question and fail the second.
+
+`--qa` appends a third agent that does answer it. The chain becomes
+`impl → review → qa`:
+
+```bash
+honeycomb cross "consume the invoice queue and expose GET /invoices/:id" \
+  --qa --tester claude --tester-model opus \
+  --start-cmd "npm run dev" --wait
+```
+
+The tester works inside the same worktree, in `full` mode, and:
+
+1. **derives the plan from the diff.** It maps which end-to-end flows the change
+   touches — entry point through to final effect — and which flows it passes near
+   without changing; those are the regression surface. The plan goes to
+   `.honeycomb/qa/plano.md` before anything runs, so what was tested is a file in
+   the branch, not a claim in a chat log.
+2. **boots the project** on ports reserved for that attempt, exposed as `PORT` and
+   `HONEYCOMB_QA_PORTS`. A fixed port would collide with another agent running in
+   parallel and the collision would read as a defect in the code under test.
+3. **exercises it by kind of change.** New endpoint: real HTTP calls with `curl`,
+   or added to the repo's Bruno collection if it has one, checking status, body
+   and side effect — including unauthenticated and as another user. New consumer:
+   a real message published on the project's broker, asserting the effect, plus a
+   malformed message and the DLQ/retry path. Front-end: the flow driven in a
+   browser, where a console error or a 5xx fired by the screen is a defect.
+   Migrations: applied, schema checked, rollback checked. Then the project's own
+   test suite, for regression.
+4. **reports, and does not fix.** Each defect comes with reproduction, expected vs
+   observed, evidence and the suspected file. "I could not boot the project" is a
+   legitimate outcome that leads to `REPROVADO` with the reason — never to a case
+   marked as passed.
+
+A rejection re-enters the same correction loop, with one difference that matters:
+`retry.through: ["review"]` sends the fix back past the **reviewer** before it is
+retested. A fix written to close a QA defect is new code, and new code has not
+been reviewed. If the reviewer rejects that fix, the round ends there and the next
+round answers the reviewer's critique instead of the tester's.
+
+| flag | what it does |
+| --- | --- |
+| `--qa` | turns the stage on (off by default) |
+| `--tester X` / `--tester-model M` | which agent tests, and on which model |
+| `--browser B` | `agent-browser` (default, via shell), `chrome-devtools` (MCP), `none` |
+| `--start-cmd "<cmd>"` | how to boot the project, if you already know |
+| `--base-url <url>` | where it answers once up |
+| `--notes "<text>"` | what you want tested with particular attention |
+| `--qa-rounds N` | correction rounds driven by QA (default 2) |
+
+**The browser is driven through a CLI by default.** `agent-browser` is the default
+choice and the tester uses its shell commands (`open`, `snapshot`, `click @eN`,
+`console`, `screenshot`) rather than its MCP server. The CLI has full parity, so
+the MCP path buys nothing and costs a server process, a version to match and an
+injection step that only two of the three tools accept. Install it once with
+`npm i -g agent-browser`.
+
+`chrome-devtools` remains available as the MCP option — it needs nothing installed
+(it runs through `npx`), but it has no CLI, which means it cannot be used with
+Kiro at all.
+
+`GET /api/browsers?tool=<tester>` reports what each choice would actually become
+(`cli` / `mcp` / `none`) plus a note when it had to be downgraded, and the composer
+shows it under the selector. That check exists because a browser that is not there
+is invisible from inside the prompt: the tester never sees the tools and reports
+the screen as untestable, or does not mention it at all.
+
+**Pay for this deliberately too.** It is a third agent plus the wall-clock time of
+booting a project and driving a browser. Turn it on for changes where working
+matters more than compiling — a new integration, a queue, a screen — and leave it
+off for a refactor the test suite already covers.
 
 ### Race — situational, not the default
 
@@ -276,9 +362,16 @@ Inside a step's prompt:
 - `{{steps.<id>.diff}}` — `diff --stat` of another step's worktree
 - `{{steps.<id>.patch}}` — full patch
 - `{{steps.<id>.workdir}}` — worktree directory
+- `{{ports}}` — free ports reserved for this attempt (needs `reservePorts: N`)
 
 A step with `workdirFrom: "<id>"` runs inside another step's worktree instead of
 creating its own — that is how the validator sees what the implementer did.
+
+Other per-step fields worth knowing: `autoCommit` commits what the step produced
+onto the worktree's branch (one commit per attempt, so correction rounds stay
+legible in the history), `mcpServers` adds MCP servers to that agent's process,
+`env` adds environment variables, and `reservePorts: N` allocates free TCP ports
+and hands them over as `PORT` and `HONEYCOMB_QA_PORTS`.
 
 ## Robustness and limits
 

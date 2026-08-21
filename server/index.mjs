@@ -9,6 +9,7 @@ import { bus, readRunLog } from './bus.mjs';
 import { runs, tasks } from './store.mjs';
 import { startRun, cancelRun, getRunDiff, commitRun, discardRun } from './runner.mjs';
 import { createTask, runTask, crossValidationTemplate, raceTemplate } from './orchestrator.mjs';
+import { BROWSER_PRESETS, DEFAULT_BROWSER, resolveBrowser, probeAgentBrowser } from './qa.mjs';
 import { isGitRepo, repoRoot, listWorktrees, currentBranch, removeWorktree } from './worktree.mjs';
 import { inspectWorktrees, collect, scheduleGc } from './gc.mjs';
 import { computeMetrics } from './metrics.mjs';
@@ -44,6 +45,27 @@ app.get('/api/tools', wrap(async (req, res) => {
 
 app.get('/api/models', wrap(async (req, res) => {
   res.json(req.query.tool ? await listModels(req.query.tool) : await listAllModels());
+}));
+
+/**
+ * Browser automation the QA stage can be pointed at.
+ *
+ * Reports what each choice would actually resolve to for the given tester, not
+ * what it declares — a browser configured and silently absent is worse than one
+ * the operator knew they did not have.
+ */
+app.get('/api/browsers', wrap(async (req, res) => {
+  const tool = req.query.tool || null;
+  res.json({
+    default: DEFAULT_BROWSER,
+    agentBrowser: await probeAgentBrowser(),
+    browsers: await Promise.all(
+      Object.keys(BROWSER_PRESETS).map(async (id) => {
+        const r = await resolveBrowser(id, { tool });
+        return { id, label: r.label, transport: r.transport, note: r.note };
+      })
+    ),
+  });
 }));
 
 /* ----------------------------------------------------------------- repo --- */
@@ -230,10 +252,19 @@ app.post('/api/tasks', wrap(async (req, res) => {
 
 app.post('/api/tasks/cross-validation', wrap(async (req, res) => {
   const { title, repo, spec, implementer, validator, verifyCommands, maxRounds,
-          implementerModel, validatorModel, autoRun } = req.body;
+          implementerModel, validatorModel, autoRun,
+          qa, tester, testerModel, qaBrowser, qaMaxRounds, startCommand, baseUrl,
+          qaNotes, autoCommit } = req.body;
   if (!repo) throw new Error('the "repo" field is required');
   if (!spec) throw new Error('the "spec" field is required');
   if (!(await isGitRepo(repo))) throw new Error(`nao e um repositorio git: ${repo}`);
+
+  for (const [field, tool] of [['implementer', implementer], ['validator', validator], ['tester', qa ? tester : null]]) {
+    if (tool && !adapters[tool]) throw new Error(`${field}: ferramenta desconhecida: ${tool}`);
+  }
+  if (qa && qaBrowser && !BROWSER_PRESETS[qaBrowser]) {
+    throw new Error(`navegador desconhecido: ${qaBrowser} (use ${Object.keys(BROWSER_PRESETS).join(', ')})`);
+  }
 
   const task = createTask({
     budget: req.body.budget,
@@ -247,6 +278,15 @@ app.post('/api/tasks/cross-validation', wrap(async (req, res) => {
       maxRounds: maxRounds != null ? Number(maxRounds) : undefined,
       implementerModel: implementerModel || null,
       validatorModel: validatorModel || null,
+      qa: !!qa,
+      tester: tester || undefined,
+      testerModel: testerModel || null,
+      qaBrowser: qa ? await resolveBrowser(qaBrowser || DEFAULT_BROWSER, { tool: tester || 'claude' }) : null,
+      qaMaxRounds: qaMaxRounds != null ? Number(qaMaxRounds) : undefined,
+      startCommand: startCommand || null,
+      baseUrl: baseUrl || null,
+      qaNotes: qaNotes || null,
+      autoCommit: autoCommit !== false,
     }),
   });
 

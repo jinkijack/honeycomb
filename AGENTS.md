@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 > Code, comments and commit messages in this repository are in English.
 > Comments explain **why**, not what — keep that standard when editing.

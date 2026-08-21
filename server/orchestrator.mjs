@@ -4,6 +4,8 @@ import { emit } from './bus.mjs';
 import { startRun, getRunDiff } from './runner.mjs';
 import { checkBudget, taskSpend } from './budget.mjs';
 import { bus } from './bus.mjs';
+import { commitWorktree } from './worktree.mjs';
+import { qaPrompt, reservePorts } from './qa.mjs';
 
 /**
  * Multi-agent orchestration engine.
@@ -23,6 +25,7 @@ import { bus } from './bus.mjs';
  *   {{steps.<id>.diff}}     diff --stat of another step's worktree
  *   {{steps.<id>.patch}}    full patch of another step's worktree
  *   {{steps.<id>.workdir}}  another step's worktree directory
+ *   {{ports}}               free ports reserved for this attempt (reservePorts)
  */
 
 const VERDICT = /VEREDITO:\s*(APROVADO|REPROVADO)/i;
@@ -111,16 +114,42 @@ export function createTask({ title, repo, steps, budget = null }) {
       workdirFrom: s.workdirFrom || null,
       dependsOn: s.dependsOn || [],
       gate: !!s.gate,
-      // { of: '<stepId>', max: N } — on rejection, sends the critique back to
-      // the target step and revalidates, up to N rounds
-      retry: s.retry?.of ? { of: s.retry.of, max: Number(s.retry.max || 2) } : null,
+      /**
+       * { of: '<stepId>', max: N, through: ['<stepId>', ...] }
+       *
+       * On rejection the critique goes back to `of`, and then everything in
+       * `through` runs again before this step does — in order. That is what makes
+       * a defect found in testing go back through review instead of straight back
+       * to the tester: an implementer's fix is new code, and new code has not been
+       * reviewed.
+       */
+      retry: s.retry?.of
+        ? {
+            of: s.retry.of,
+            max: Number(s.retry.max || 2),
+            through: Array.isArray(s.retry.through) ? s.retry.through.filter(Boolean) : [],
+          }
+        : null,
       model: s.model || null,
       effort: s.effort || null,
+      // extra MCP servers for this step only (the browser the tester drives)
+      mcpServers: s.mcpServers || null,
+      env: s.env || null,
+      // free TCP ports handed to the step, so two testers booting the same
+      // project in parallel do not collide on its default port
+      reservePorts: Number(s.reservePorts || 0),
+      // commit what the step produced onto the worktree's own branch
+      autoCommit: !!s.autoCommit,
+      // a caveat about how this step had to be configured (e.g. the browser
+      // asked for was downgraded), carried so it reaches whoever reads the task
+      // and not only whoever created it
+      note: s.note || null,
       status: 'pending',
       runId: null,
       verdict: null,
       rounds: null,
       retryRound: null,
+      commit: null,
     })),
   };
 
@@ -152,6 +181,31 @@ export async function runTask(taskId) {
     taskEvents(taskId, { type: 'step_status', stepId, ...changes });
   };
 
+  /**
+   * Commits what a step produced onto the worktree's own branch.
+   *
+   * Best-effort on purpose: a commit that fails (a pre-commit hook, a checkout
+   * the agent did against the rules) must be reported, not turn a step that
+   * actually did the work into a failure. `commitWorktree` refuses anything that
+   * is not a `honeycomb/` branch, which is what keeps this from ever writing to
+   * the user's own branch.
+   */
+  const autoCommit = async (stepId, dir, runId) => {
+    if (!dir) return null;
+    try {
+      const res = await commitWorktree(dir, `honeycomb(${stepId}): ${task.title}`);
+      if (res.committed) {
+        runs.patch(runId, { commit: res });
+        patchStep(stepId, { commit: res });
+        taskEvents(taskId, { type: 'commit', stepId, sha: res.sha });
+      }
+      return res;
+    } catch (err) {
+      taskEvents(taskId, { type: 'commit_failed', stepId, error: err.message });
+      return { committed: false, error: err.message };
+    }
+  };
+
   /** Fires one attempt of a step and returns the raw result. */
   const attempt = async (stepId, { promptOverride, cwdOverride, labelSuffix = '' } = {}) => {
     const step = byId.get(stepId);
@@ -159,6 +213,17 @@ export async function runTask(taskId) {
     let prompt = promptOverride;
     if (prompt == null) {
       prompt = await interpolate(step.prompt, { repo: task.repo, results });
+    }
+
+    /**
+     * Ports are reserved per attempt, not per task: a task created today and run
+     * again next week would otherwise carry ports that meanwhile got taken.
+     */
+    let env = step.env ? { ...step.env } : null;
+    if (step.reservePorts > 0) {
+      const ports = await reservePorts(step.reservePorts);
+      prompt = prompt.split('{{ports}}').join(ports.join(', '));
+      env = { ...(env || {}), PORT: String(ports[0]), HONEYCOMB_QA_PORTS: ports.join(',') };
     }
 
     // a step may work inside another step's worktree (e.g. reviewing what the
@@ -184,6 +249,8 @@ export async function runTask(taskId) {
       mode: step.mode,
       model: step.model,
       effort: step.effort,
+      mcpServers: step.mcpServers,
+      env,
       label: `${task.title} / ${stepId}${labelSuffix}`,
       taskId,
       stepId,
@@ -210,6 +277,16 @@ export async function runTask(taskId) {
     }
 
     results[stepId] = result;
+
+    /**
+     * The work is committed as soon as the step that produced it succeeds, one
+     * commit per attempt. That keeps each correction round legible in the branch
+     * history instead of collapsing into one final blob, and it means a crash
+     * later in the task cannot lose work that was already done.
+     */
+    if (step.autoCommit && result.ok) {
+      await autoCommit(stepId, result.worktree?.dir || (isolation === 'shared' ? cwd : null), runId);
+    }
 
     const verdictMatch = (result.output || '').match(VERDICT);
     const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null;
@@ -269,54 +346,103 @@ export async function runTask(taskId) {
       const target = byId.get(targetId);
       const targetWorktree = results[targetId]?.worktree?.dir;
 
+      /**
+       * Everything that has to run again between the fix and this step, in order.
+       *
+       * For the reviewer this is empty and the loop is the original one: fix, then
+       * review again. For the tester it is `['review']`, and that ordering is the
+       * point — a fix written to close a QA defect is code nobody has reviewed, so
+       * it goes past the reviewer before it goes back to the tester.
+       */
+      const chain = [...(step.retry.through || []).filter((id) => byId.has(id)), stepId];
+
+      // whose critique the implementer is answering; it stops being the gate's
+      // as soon as an intermediate step rejects in the middle of a round
+      let criticId = stepId;
+      let critique = result.output || '';
+
       for (let round = 1; round <= max && verdict === 'REPROVADO'; round++) {
         if (!target || !targetWorktree) break;
 
         patchStep(targetId, { status: 'running', retryRound: round });
-        taskEvents(taskId, { type: 'retry', stepId: targetId, round, max });
+        taskEvents(taskId, { type: 'retry', stepId: targetId, round, max, from: criticId });
 
         const fixPrompt = [
-          `Seu trabalho anterior foi REPROVADO na revisao (rodada ${round} de ${max}).`,
+          `Seu trabalho anterior foi REPROVADO em "${criticId}" (rodada ${round} de ${max}).`,
           '',
           '## Tarefa original',
           await interpolate(target.prompt, { repo: task.repo, results }),
           '',
           '## Por que foi reprovado',
-          result.output || '(sem detalhe)',
+          critique || '(sem detalhe)',
           '',
           '## O que fazer agora',
           'Corrija os problemas apontados acima, no mesmo worktree onde voce ja',
           'trabalhou — seus arquivos continuam la. Nao recomece do zero.',
-          'Onde a revisao contradiz o enunciado original, a revisao prevalece:',
+          'Onde a critica contradiz o enunciado original, a critica prevalece:',
           'ela viu o resultado real da execucao, o enunciado nao.',
-          'Se discordar de algum ponto da revisao, corrija o resto e explique',
-          'objetivamente por que aquele ponto especifico nao procede.',
-          'Rode a verificacao novamente antes de concluir.',
+          'Se discordar de algum ponto, corrija o resto e explique objetivamente',
+          'por que aquele ponto especifico nao procede.',
+          'Rode a verificacao novamente antes de concluir, e commite a correcao',
+          'nesta branch de worktree (sem trocar de branch, sem push, e sem nenhum',
+          'trailer de co-autoria na mensagem).',
         ].join('\n');
 
+        let fixOk = false;
         try {
-          await attempt(targetId, {
+          const fix = await attempt(targetId, {
             promptOverride: fixPrompt,
             cwdOverride: targetWorktree,
             labelSuffix: ` (correção ${round})`,
           });
+          fixOk = !!fix.result.ok;
         } catch (err) {
           patchStep(targetId, { status: 'failed', error: err.message });
           break;
         }
 
-        patchStep(targetId, { status: 'done', retryRound: round });
+        /**
+         * A correction that timed out or exited with an error is not a
+         * correction. Marking it done — as this used to — hid the failure behind
+         * whatever the next verdict happened to say.
+         */
+        patchStep(targetId, { status: fixOk ? 'done' : 'failed', retryRound: round });
+        if (!fixOk) break;
 
-        // revalidate with the reviewer, now seeing the corrected work
-        try {
-          ({ result, verdict } = await attempt(stepId, { labelSuffix: ` (revisão ${round + 1})` }));
-        } catch (err) {
-          patchStep(stepId, { status: 'failed', error: err.message });
-          failed.add(stepId);
-          return;
+        for (const linkId of chain) {
+          const link = byId.get(linkId);
+          let out;
+          try {
+            out = await attempt(linkId, { labelSuffix: ` (rodada ${round + 1})` });
+          } catch (err) {
+            patchStep(linkId, { status: 'failed', error: err.message });
+            failed.add(linkId);
+            if (linkId === stepId) return;
+            break;
+          }
+
+          const linkRejected = out.verdict === 'REPROVADO' || (link.gate && !out.result.ok);
+          patchStep(linkId, {
+            rounds: round + 1,
+            verdict: out.verdict,
+            status: linkRejected ? 'rejected' : 'done',
+            cost: out.result.cost ?? null,
+          });
+
+          if (linkId === stepId) {
+            result = out.result;
+            verdict = out.verdict;
+          }
+
+          if (linkRejected) {
+            // the round ends here: the gate downstream does not get to run on
+            // work that has already been refused upstream
+            criticId = linkId;
+            critique = out.result.output || '';
+            if (linkId !== stepId) verdict = 'REPROVADO';
+            break;
+          }
         }
-
-        patchStep(stepId, { rounds: round + 1 });
       }
     }
 
@@ -388,6 +514,15 @@ export async function runTask(taskId) {
  * between tools. The implementer writes in an isolated worktree; the validator
  * enters that same worktree in read-only mode, inspects the diff and issues a
  * verdict.
+ *
+ * With `qa: true` a third agent is appended, and the chain becomes
+ * impl → review → qa. The reviewer answers "is this code right"; the tester
+ * answers "does it work when you run it" — it boots the project on reserved
+ * ports, derives a test plan from what the diff actually changed, and exercises
+ * it through HTTP, the broker or a browser. Its rejection re-enters the same
+ * correction loop, but `through: ['review']` makes the fix pass the reviewer
+ * again before it is retested: a fix is new code, and new code has not been
+ * reviewed.
  */
 export function crossValidationTemplate({
   title,
@@ -399,7 +534,28 @@ export function crossValidationTemplate({
   maxRounds = 2,
   implementerModel = null,
   validatorModel = null,
+  // --- optional QA stage ---------------------------------------------------
+  // Off by default: it costs a third agent and real wall-clock time booting the
+  // project, and plenty of changes do not justify that. When on, it is the last
+  // gate — nothing is approved that was not executed.
+  qa = false,
+  tester = 'claude',
+  testerModel = null,
+  // a resolved plan from `resolveBrowser`, not a preset name — the template must
+  // configure what the tester will really find, not what was asked for
+  qaBrowser = null,
+  qaMaxRounds = 2,
+  startCommand = null,
+  baseUrl = null,
+  qaNotes = null,
+  autoCommit = true,
 }) {
+  // a preset name here would silently produce a tester with no browser, which is
+  // exactly the failure the resolution step exists to prevent
+  if (typeof qaBrowser === 'string') {
+    throw new Error('qaBrowser deve ser o resultado de resolveBrowser(), nao o nome do preset');
+  }
+
   const commands = verifyCommands?.length
     ? verifyCommands
     : ['npx tsc --noEmit -p tsconfig.json', 'npm run lint', 'npm test'];
@@ -414,13 +570,19 @@ export function crossValidationTemplate({
         model: implementerModel,
         mode: 'full',
         isolation: 'worktree',
+        autoCommit,
         prompt: [
           `Implemente a seguinte tarefa no repositorio em {{repo}}:`,
           '',
           spec,
           '',
           'Regras:',
-          '- Trabalhe apenas neste worktree; nao rode git commit, push ou checkout.',
+          '- Voce esta numa branch de worktree isolada, criada so para esta tarefa.',
+          '  Commite seu trabalho nela ao terminar (`git add -A && git commit -m ...`).',
+          '  Nunca rode `git checkout`, `git switch`, `git push`, nem crie outra branch:',
+          '  o commit tem que ficar nesta branch e em nenhuma outra.',
+          '- Na mensagem de commit nao inclua trailer de co-autoria, atribuicao a IA',
+          '  nem "Generated with" — so a descricao do que foi feito.',
           '- Siga os padroes ja existentes no codigo (nomes, estilo, estrutura).',
           '- As dependencias estao instaladas: rode typecheck e testes para conferir',
           '  seu proprio trabalho antes de dar a tarefa por concluida.',
@@ -441,6 +603,9 @@ export function crossValidationTemplate({
         workdirFrom: 'impl',
         gate: true,
         retry: { of: 'impl', max: maxRounds },
+        // the reviewer runs in `verify` and writes nothing, so there is nothing
+        // of its own to commit; the implementer's fixes are committed by the
+        // implementer's own step
         prompt: [
           'Voce esta revisando o trabalho de outro agente, ja aplicado no worktree atual.',
           '',
@@ -484,6 +649,40 @@ export function crossValidationTemplate({
         ].join('\n'),
         dependsOn: ['impl'],
       },
+      ...(qa
+        ? [
+            {
+              id: 'qa',
+              tool: tester,
+              model: testerModel,
+              /**
+               * `full`, not `verify`: the tester boots the project, writes the
+               * plan, records logs and screenshots, and may add requests to a
+               * Bruno collection or a regression test. The prompt is what keeps
+               * it from touching production code — the mode cannot express
+               * "write here but not there", and taking write access away would
+               * cost the artefacts, which are the durable part of the stage.
+               */
+              mode: 'full',
+              workdirFrom: 'impl',
+              gate: true,
+              retry: { of: 'impl', max: qaMaxRounds, through: ['review'] },
+              mcpServers: qaBrowser?.mcpServers || null,
+              reservePorts: 3,
+              autoCommit,
+              note: qaBrowser?.note || null,
+              dependsOn: ['review'],
+              prompt: qaPrompt({
+                spec,
+                browser: qaBrowser,
+                startCommand,
+                baseUrl,
+                notes: qaNotes,
+                regressionCommands: commands,
+              }),
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -500,12 +699,20 @@ export function crossValidationTemplate({
  * The cost is obvious: you pay N times for the same task. It pays off when the
  * task is ambiguous enough that different approaches are informative.
  */
-export function raceTemplate({ title, repo, spec, agents = ['kiro', 'claude'], judge = 'claude' }) {
+export function raceTemplate({
+  title,
+  repo,
+  spec,
+  agents = ['kiro', 'claude'],
+  judge = 'claude',
+  autoCommit = true,
+}) {
   const implSteps = agents.map((tool, i) => ({
     id: `impl_${tool}${agents.indexOf(tool) !== i ? `_${i}` : ''}`,
     tool,
     mode: 'full',
     isolation: 'worktree',
+    autoCommit,
     dependsOn: [],
     prompt: [
       `Implemente a seguinte tarefa no repositorio em {{repo}}:`,
@@ -513,7 +720,9 @@ export function raceTemplate({ title, repo, spec, agents = ['kiro', 'claude'], j
       spec,
       '',
       'Regras:',
-      '- Trabalhe apenas neste worktree; nao rode git commit, push ou checkout.',
+      '- Commite seu trabalho na branch deste worktree ao terminar. Nunca rode',
+      '  `git checkout`, `git switch` ou `git push`, e nao inclua trailer de',
+      '  co-autoria na mensagem de commit.',
       '- Siga os padroes ja existentes no codigo.',
       '- As dependencias estao instaladas: rode typecheck/lint/teste para conferir seu proprio trabalho.',
       '- Ao terminar, explique brevemente sua abordagem e os trade-offs que escolheu.',

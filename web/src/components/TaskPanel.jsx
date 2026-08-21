@@ -54,6 +54,14 @@ function StepRow({ step, onOpenRun }) {
             {money(step.cost)}
           </span>
         )}
+        {step.commit?.sha && (
+          <span
+            className="rounded bg-pollen/10 px-1.5 py-0.5 font-mono text-[10px] text-pollen"
+            title="Commitado na branch do worktree do agente"
+          >
+            {step.commit.sha.slice(0, 7)}
+          </span>
+        )}
         {step.runId && (
           <Button variant="ghost" className="whitespace-nowrap" onClick={() => onOpenRun(step.runId)}>
             ver run
@@ -61,6 +69,7 @@ function StepRow({ step, onOpenRun }) {
         )}
       </div>
       {step.skipReason && <p className="pb-2 text-[11px] text-wax-900">{step.skipReason}</p>}
+      {step.note && <p className="pb-2 text-[11px] text-peach/90">{step.note}</p>}
     </li>
   );
 }
