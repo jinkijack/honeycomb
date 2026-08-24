@@ -10,11 +10,11 @@ Last revised: 2026-08-21.
 ## What this is
 
 A local daemon (~2,000 lines of server, ~600 of CLI, ~1,800 of frontend) that
-treats Claude Code, Kiro and Codex as interchangeable executors. The axis of the
-design is a normalized event format (`bus.mjs`): every adapter translates its
-CLI's output into the same vocabulary (`text`, `tool_use`, `tool_result`,
+treats Claude Code, Kiro, Codex and Cursor as interchangeable executors. The
+axis of the design is a normalized event format (`bus.mjs`): every adapter
+translates its output into the same vocabulary (`text`, `tool_use`, `tool_result`,
 `result`, `status`), which is why the orchestrator, the UI and the CLI can treat
-all three tools as one thing.
+all four tools as one thing.
 
 Cleanly separated layers:
 
@@ -76,21 +76,35 @@ lists. Those lines leave the final `output`, which is exactly where the
 orchestrator looks for `VEREDITO:`. `--model` and `--effort` are also forwarded
 without checking support.
 
-**Verification commands assume Node.** The defaults are `npx tsc --noEmit`,
-`npm run lint`, `npm test`. On a Maven or Cargo project all three fail for not
-existing, and the flow then depends on the reviewer classifying that correctly in
-free text. Detecting the ecosystem from the repo would be more reliable than
-instructing the model to interpret an absence.
+**Stack discovery is delegated to the agent, not detected.** There is no longer a
+default command list (it used to be `npx tsc --noEmit`, `npm run lint`,
+`npm test`, which failed on every non-Node repo); the reviewer is told to find
+the project's real commands from the CI and the manifest, and the QA stage opens
+with a Part 0 that makes the tester name the stack, the boot command and how that
+stack takes a port. That removes the false negatives, but it moves the work into
+the prompt: nothing on Honeycomb's side verifies that the agent identified the
+project correctly, and a wrong Part 0 is only visible by reading the report.
+Parsing the manifests server-side would be checkable; it would also have to keep
+up with every ecosystem, which is the reason it is not done.
+
+**An agent's own commit can still carry the dependency symlink.** `git add -A`
+stages it, because `.gitignore` says `node_modules/` and git sees a link, not a
+directory. `commitWorktree` excludes it and drops it from the index, so every
+Honeycomb commit is clean and repairs the branch — but the agents are told to
+commit their own work, and with `autoCommit` off nothing runs after them. That
+branch keeps a `120000` blob holding an absolute path from the machine that
+produced it. `autoCommit` defaults to on, which covers the normal path.
 
 **Race has no UI.** It exists on the server (`/api/tasks/race`, `raceTemplate`)
 and in the CLI, but nothing in `web/src` references race, judge or winner.
 `task.winner` is computed by the orchestrator and never displayed — the result of
 a race only appears if you read the JSON or the CLI summary.
 
-**Codex spend escapes the ceilings.** Codex reports tokens, not cost, and the
-ceilings work in credit. A run started on Codex therefore never counts against
-`HONEYCOMB_TASK_BUDGET` or `HONEYCOMB_DAILY_BUDGET`. That is a deliberate
-consequence of not inventing a price table, but it means the safety net has a hole.
+**Codex and Cursor spend escapes the ceilings.** Both report tokens, not cost,
+and the ceilings work in credit. A run started on either therefore never counts
+against `HONEYCOMB_TASK_BUDGET` or `HONEYCOMB_DAILY_BUDGET`. That is a deliberate
+consequence of not inventing a price table, but it means the safety net has a
+hole — and it is now half the tools, not one of three.
 
 ### Smaller
 
@@ -135,10 +149,14 @@ tell a failed navigation from a successful one. That is the same trade the Kiro
 adapter makes, and it is why `chrome-devtools` stays available for the cases where
 typed tool results are worth an MCP server.
 
-**`chrome-devtools` excludes Kiro entirely.** It has no CLI and Kiro takes no MCP
-configuration on the command line, so the combination resolves to no browser at
-all. `resolveBrowser` says so before the task is created; it is still a
-configuration that looks valid and is not.
+**`chrome-devtools` excludes Kiro and Cursor entirely.** It has no CLI, and
+neither of those takes MCP configuration on the command line — Kiro reads it from
+agent files, Cursor from a `.cursor/mcp.json` inside the workspace — so the
+combination resolves to no browser at all. `resolveBrowser` says so before the
+task is created; it is still a configuration that looks valid and is not.
+
+Writing `.cursor/mcp.json` into the worktree would work and was rejected on
+purpose: it would appear in the agent's diff as a change the agent never made.
 
 **The install probe is cached for the daemon's lifetime.** Installing
 `agent-browser` under a running daemon needs a restart to be noticed.

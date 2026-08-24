@@ -10,7 +10,7 @@ import { qaPrompt, reservePorts } from './qa.mjs';
 /**
  * Multi-agent orchestration engine.
  *
- * A task is a graph of steps. Each step runs on a tool (kiro, claude, codex) and
+ * A task is a graph of steps. Each step runs on a tool (kiro, claude, codex, cursor) and
  * declares which other steps it depends on. Steps with no pending dependency run
  * in parallel; the rest wait.
  *
@@ -556,9 +556,36 @@ export function crossValidationTemplate({
     throw new Error('qaBrowser deve ser o resultado de resolveBrowser(), nao o nome do preset');
   }
 
-  const commands = verifyCommands?.length
-    ? verifyCommands
-    : ['npx tsc --noEmit -p tsconfig.json', 'npm run lint', 'npm test'];
+  /**
+   * Verification commands, when the operator named them.
+   *
+   * There is deliberately no default list. It used to be `npx tsc --noEmit`,
+   * `npm run lint`, `npm test`, which on a Maven, Cargo or Django repo is three
+   * commands that fail for not existing — and the flow then rests on the
+   * reviewer classifying that absence correctly in free text, which costs turns
+   * and sometimes gets it wrong. Telling the agent to find the project's real
+   * commands is both shorter and more accurate: it is reading the repo anyway.
+   */
+  const commands = verifyCommands?.length ? verifyCommands : null;
+
+  /** What the reviewer is told when nobody named the commands. */
+  const discoverVerification = [
+    'Ninguem informou os comandos de verificacao deste projeto, entao descubra-os',
+    'antes de revisar. Este repo pode ser de qualquer stack — nao presuma nenhuma.',
+    '',
+    'Em ordem de confiabilidade:',
+    '',
+    '  1. `.github/workflows/*.yml` (ou outro CI): e a unica documentacao que nao',
+    '     pode estar desatualizada, porque ela roda.',
+    '  2. Os scripts do manifesto que existir: `package.json`, `pom.xml`,',
+    '     `build.gradle`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `*.csproj`,',
+    '     `Gemfile`, `composer.json`.',
+    '  3. `Makefile` / `Taskfile.yml` / `justfile`, e o README.',
+    '',
+    'Rode o que achar de build/compilacao, checagem estatica e testes. Se o projeto',
+    'nao tiver alguma dessas coisas, isso e um fato sobre o projeto e nao reprova —',
+    'diga que nao existe, nao invente um comando para poder dizer que falhou.',
+  ];
 
   return {
     title,
@@ -584,8 +611,10 @@ export function crossValidationTemplate({
           '- Na mensagem de commit nao inclua trailer de co-autoria, atribuicao a IA',
           '  nem "Generated with" — so a descricao do que foi feito.',
           '- Siga os padroes ja existentes no codigo (nomes, estilo, estrutura).',
-          '- As dependencias estao instaladas: rode typecheck e testes para conferir',
-          '  seu proprio trabalho antes de dar a tarefa por concluida.',
+          '- As dependencias estao instaladas: rode a verificacao que ESTE projeto',
+          '  tiver (build, checagem estatica, testes) para conferir seu proprio',
+          '  trabalho antes de dar a tarefa por concluida. Descubra os comandos no',
+          '  CI e no manifesto do projeto — nao presuma a stack.',
           '- Se alterar config do projeto para conseguir rodar algo, restaure ao final',
           '  e confirme no diff que so sobraram as mudancas pretendidas.',
           '- Ao terminar, liste os arquivos alterados, explique as decisoes e diga o',
@@ -620,17 +649,20 @@ export function crossValidationTemplate({
           '',
           '## Parte 1 — EXECUTE, nao apenas leia',
           '',
-          'As dependencias do projeto estao instaladas neste worktree. Rode, nesta ordem:',
+          'Os diretorios de dependencia do repo principal estao ligados por symlink',
+          'neste worktree, entao normalmente nao ha o que instalar.',
           '',
-          ...commands.map((cmd) => `    ${cmd}`),
+          ...(commands
+            ? ['Rode, nesta ordem:', '', ...commands.map((cmd) => `    ${cmd}`)]
+            : discoverVerification),
           '',
           'Se algum comando nao existir ou falhar por motivo pre-existente (quebrado',
           'tambem na branch base), verifique isso comparando com o repo original e',
           'diga explicitamente que e pre-existente. Se voce nao conseguir executar',
           'algum passo, diga qual e por que — nunca presuma que passou.',
           '',
-          'Se o typecheck ou os testes falharem POR CAUSA desta implementacao, o',
-          'veredito e REPROVADO, independente da qualidade do codigo.',
+          'Se o build, a checagem estatica ou os testes falharem POR CAUSA desta',
+          'implementacao, o veredito e REPROVADO, independente da qualidade do codigo.',
           '',
           '## Parte 2 — revise o codigo',
           '',

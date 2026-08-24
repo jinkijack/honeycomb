@@ -7,7 +7,7 @@ import { LOG_DIR } from './config.mjs';
  * Normalized event bus.
  *
  * Every adapter, whatever the tool, emits events with the same shape. That is
- * what lets the UI render kiro, claude and codex with the same components, and
+ * what lets the UI render kiro, claude, codex and cursor with the same components, and
  * lets the orchestrator treat them all as one abstraction.
  *
  * type:

@@ -48,7 +48,7 @@
   --color-coral: #ee7762;    /* keyword   → Claude Code */
   --color-lavender: #b6b3eb; /* identifier → Kiro CLI */
   --color-peach: #ee9b70;    /* parameter */
-  --color-ice: #57d1eb;      /* class name */
+  --color-ice: #57d1eb;      /* class name → Cursor CLI */
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;

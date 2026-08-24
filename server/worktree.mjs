@@ -82,6 +82,32 @@ export async function createWorktree(repo, { name, baseRef, linkDeps = true } = 
  */
 export const DEP_DIRS = ['node_modules', 'vendor', '.venv', 'target'];
 
+/**
+ * Which dependency directories are OUR symlinks in this worktree.
+ *
+ * Everything that stages files has to skip these, and for a reason that is easy
+ * to miss: they enter the worktree as *symlinks*, and a `.gitignore` entry like
+ * `node_modules/` matches a directory, not a link. Git sees a plain file, the
+ * ignore rule does not apply, and `git add -A` stages it — a `120000` blob whose
+ * content is an absolute path on this machine.
+ *
+ * The check is `isSymbolicLink` and not "is it in DEP_DIRS" because some
+ * projects track `vendor/` as a real directory. Excluding that would erase
+ * genuine agent work from the diff, and drop it from the commit.
+ *
+ * Shared by `worktreeDiff` and `commitWorktree` on purpose: the two must agree
+ * on what counts as ours, and they did not while each carried its own copy.
+ */
+export function linkedDepDirs(dir) {
+  return DEP_DIRS.filter((d) => {
+    try {
+      return fs.lstatSync(path.join(dir, d)).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  });
+}
+
 function linkDependencies(root, dir) {
   const linked = [];
   for (const dep of DEP_DIRS) {
@@ -149,24 +175,11 @@ export async function worktreeDiff(dir, { baseSha = null } = {}) {
   if (!fs.existsSync(dir)) return { stat: '', patch: '', files: [] };
 
   /**
-   * -N makes new files show up in the diff without having to commit.
-   *
-   * Dependency directories must be excluded explicitly: they enter the worktree
-   * as *symlinks*, and a `.gitignore` entry like `node_modules/` matches a
-   * directory, not a link. Without this, `-N` marks the symlink as a new file and
-   * it shows up in EVERY agent diff, as if the agent had created it.
-   *
-   * The exclusion only applies to what is provably our symlink: some projects
-   * track `vendor/` as a real directory, and hiding that from the diff would
-   * erase genuine agent work from the screen.
+   * -N makes new files show up in the diff without having to commit. Without the
+   * exclusion below it would also mark the dependency symlinks as new files, and
+   * they would show up in EVERY agent diff as if the agent had created them.
    */
-  const linked = DEP_DIRS.filter((d) => {
-    try {
-      return fs.lstatSync(path.join(dir, d)).isSymbolicLink();
-    } catch {
-      return false;
-    }
-  });
+  const linked = linkedDepDirs(dir);
 
   // drop from the index whatever a previous run already marked with -N
   if (linked.length) {
@@ -310,10 +323,32 @@ export async function assertAgentBranch(dir) {
   return branch;
 }
 
-/** Consolidates the agent's work into a commit on its own branch. */
+/**
+ * Consolidates the agent's work into a commit on its own branch.
+ *
+ * The dependency symlinks are kept out of the commit for the reason spelled out
+ * on `linkedDepDirs`: a bare `git add -A` stages them, and the branch ends up
+ * carrying a `120000` blob pointing at an absolute path on the machine that
+ * produced it. It was invisible for a long time because `worktreeDiff` filters
+ * them, so the UI showed a clean diff while the commit did not match it.
+ *
+ * `rm --cached` runs as well as the exclusion, and it is not redundant: the
+ * agents are told to commit their own work, and they use `git add -A` too. When
+ * one of them already tracked the link, excluding it from our `add` would leave
+ * it in the tree forever — dropping it from the index makes this commit the one
+ * that removes it. `--ignore-unmatch` keeps that a no-op in the normal case, and
+ * `--cached` leaves the link itself in place, which the running agent may still
+ * need.
+ */
 export async function commitWorktree(dir, message) {
   await assertAgentBranch(dir);
-  await git(dir, ['add', '-A']);
+
+  const linked = linkedDepDirs(dir);
+  if (linked.length) {
+    await git(dir, ['rm', '--cached', '-q', '--ignore-unmatch', '--', ...linked]).catch(() => {});
+  }
+  await git(dir, ['add', '-A', '--', '.', ...linked.map((d) => `:(exclude)${d}`)]);
+
   try {
     await git(dir, ['commit', '--no-gpg-sign', '-m', sanitizeMessage(message)]);
   } catch (err) {

@@ -19,6 +19,7 @@ export const BIN = {
   claude: process.env.HONEYCOMB_CLAUDE_BIN || path.join(os.homedir(), '.local/bin/claude'),
   kiro: process.env.HONEYCOMB_KIRO_BIN || path.join(os.homedir(), '.local/bin/kiro-cli'),
   codex: process.env.HONEYCOMB_CODEX_BIN || 'codex',
+  cursor: process.env.HONEYCOMB_CURSOR_BIN || path.join(os.homedir(), '.local/bin/cursor-agent'),
 };
 
 // Default per-step timeout. Coding agents take minutes; 20min is roomy enough

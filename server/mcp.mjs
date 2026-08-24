@@ -224,7 +224,7 @@ const server = new McpServer(
   { name: 'honeycomb', version: '0.1.0' },
   {
     instructions:
-      'Honeycomb orquestra CLIs de agentes (Claude Code, Kiro, Codex) em worktrees git ' +
+      'Honeycomb orquestra CLIs de agentes (Claude Code, Kiro, Codex, Cursor) em worktrees git ' +
       'isolados. Use honeycomb_cross para implementar algo com revisão independente, ' +
       'honeycomb_run para uma tarefa numa ferramenta só. Um VEREDITO: REPROVADO é ' +
       'resultado legítimo, não erro. Nada é commitado na sua branch sem honeycomb_commit.',
@@ -290,7 +290,7 @@ server.registerTool(
       'Modelos por ferramenta, com multiplicador de custo quando existe. Relevante no Kiro, ' +
       'onde os modelos vão de 0,05× a 2,4× — quase 50× de diferença de preço pela mesma tarefa. ' +
       'Consulte antes de escolher modelo para trabalho caro.',
-    inputSchema: { tool: z.enum(['claude', 'kiro', 'codex']).optional() },
+    inputSchema: { tool: z.enum(['claude', 'kiro', 'codex', 'cursor']).optional() },
     annotations: { readOnlyHint: true },
   },
   guard(async ({ tool }) => {
@@ -466,7 +466,7 @@ server.registerTool(
       'escreve), rw (edita sem shell), full (autonomia total, só faz sentido isolado). ' +
       'Para trabalho que precisa ser conferido, prefira honeycomb_cross.',
     inputSchema: {
-      tool: z.enum(['claude', 'kiro', 'codex']),
+      tool: z.enum(['claude', 'kiro', 'codex', 'cursor']),
       prompt: z.string().describe('A tarefa, escrita para o agente que vai executá-la.'),
       repo: repoArg,
       mode: z.enum(['ro', 'verify', 'rw', 'full']).default('ro'),
@@ -505,14 +505,18 @@ server.registerTool(
     inputSchema: {
       spec: z.string().describe('O que deve ser implementado. Quanto mais preciso, menos rodadas.'),
       repo: repoArg,
-      implementer: z.enum(['claude', 'kiro', 'codex']).default('kiro'),
-      validator: z.enum(['claude', 'kiro', 'codex']).default('claude'),
+      implementer: z.enum(['claude', 'kiro', 'codex', 'cursor']).default('kiro'),
+      validator: z.enum(['claude', 'kiro', 'codex', 'cursor']).default('claude'),
       implementerModel: z.string().optional(),
       validatorModel: z.string().optional(),
       verifyCommands: z
         .array(z.string())
         .optional()
-        .describe('Comandos de verificação. Padrão: npx tsc --noEmit, npm run lint, npm test.'),
+        .describe(
+          'Comandos de verificação do projeto (build, lint, testes). Sem isso o ' +
+            'revisor descobre os comandos reais lendo o CI e o manifesto do repo — ' +
+            'informe apenas se quiser fixar quais são.'
+        ),
       maxRounds: z.number().int().min(0).max(5).default(2),
       qa: z
         .boolean()
@@ -524,14 +528,15 @@ server.registerTool(
             'regressão em volta. Custa um agente a mais e tempo de relógio; ligue quando importar ' +
             'que a coisa funcione rodando, não só que o código esteja certo.'
         ),
-      tester: z.enum(['claude', 'kiro', 'codex']).default('claude'),
+      tester: z.enum(['claude', 'kiro', 'codex', 'cursor']).default('claude'),
       testerModel: z.string().optional(),
       qaBrowser: z
         .enum(['agent-browser', 'chrome-devtools', 'none'])
         .default('agent-browser')
         .describe(
           'Automação de navegador do testador. agent-browser é dirigido pelo shell e funciona ' +
-            'nas três ferramentas; chrome-devtools entra como servidor MCP e o kiro não o recebe.'
+            'em todas as ferramentas; chrome-devtools entra como servidor MCP, que o kiro e o ' +
+            'cursor não recebem por linha de comando.'
         ),
       qaMaxRounds: z.number().int().min(0).max(5).default(2),
       startCommand: z.string().optional().describe('Como subir o projeto, se você já souber.'),
@@ -569,8 +574,8 @@ server.registerTool(
     inputSchema: {
       spec: z.string(),
       repo: repoArg,
-      agents: z.array(z.enum(['claude', 'kiro', 'codex'])).min(2).default(['kiro', 'claude']),
-      judge: z.enum(['claude', 'kiro', 'codex']).default('claude'),
+      agents: z.array(z.enum(['claude', 'kiro', 'codex', 'cursor'])).min(2).default(['kiro', 'claude']),
+      judge: z.enum(['claude', 'kiro', 'codex', 'cursor']).default('claude'),
       wait: waitArg,
     },
   },

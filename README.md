@@ -1,7 +1,7 @@
 # Honeycomb
 
-Orchestrates agent CLIs (Claude Code, Kiro, Codex) as task executors, with a web
-UI, managed sessions, and git worktree isolation.
+Orchestrates agent CLIs (Claude Code, Kiro, Codex, Cursor) as task executors,
+with a web UI, managed sessions, and git worktree isolation.
 
 The name describes the structure: every agent works in its own cell — an isolated
 git worktree with its own branch, identical to its neighbours and with no contact
@@ -10,6 +10,63 @@ with them. What the UI shows you is the whole comb at once.
 > **Heads up:** this tool spawns coding agents with write and shell access on your
 > machine. Read [Security](#security) before running it.
 
+## Dependencies
+
+Honeycomb itself is small — Node and git. What it needs is the tools it drives,
+and it does not install any of them for you: it probes what is on your machine
+and shows the result in `honeycomb tools`, so an agent you never installed simply
+appears unavailable instead of failing mid-run.
+
+**Required**
+
+- **Node 20+** — daemon, CLI and frontend.
+- **git 2.20+** — isolation is built on `git worktree`.
+- **At least one agent CLI**, from the table below. Nothing works without one:
+  Honeycomb has no model of its own, it orchestrates other people's.
+
+**Agent CLIs** — install the ones you want. Each authenticates on its own, once:
+run it in a terminal and log in before pointing Honeycomb at it.
+
+| tool | install | where Honeycomb looks | override |
+|---|---|---|---|
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) | `curl -fsSL https://claude.ai/install.sh \| bash` | `~/.local/bin/claude` | `HONEYCOMB_CLAUDE_BIN` |
+| [Codex CLI](https://developers.openai.com/codex/cli) | `npm i -g @openai/codex` | `codex` on `PATH` | `HONEYCOMB_CODEX_BIN` |
+| [Cursor CLI](https://cursor.com/docs/agent/terminal) | `curl https://cursor.com/install -fsS \| bash` | `~/.local/bin/cursor-agent` | `HONEYCOMB_CURSOR_BIN` |
+| [Kiro CLI](https://kiro.dev/docs) | see the Kiro docs | `~/.local/bin/kiro-cli` | `HONEYCOMB_KIRO_BIN` |
+
+The install commands come from each vendor and may drift; the links are the
+source of truth. What matters to Honeycomb is only the resulting binary path — if
+yours lives somewhere else, set the env var and it is found.
+
+**The agentic browser** (optional, for the QA stage)
+
+The QA stage drives a real browser to exercise screens. The default is
+[`agent-browser`](https://www.npmjs.com/package/agent-browser), driven through
+its shell commands rather than an MCP server — that is the only path that works
+on all four agent CLIs. It ships no browser of its own, so the install is two
+steps:
+
+```bash
+npm i -g agent-browser
+agent-browser install --with-deps   # downloads Chrome for Testing (+ Linux libs)
+agent-browser doctor                # confirms the install
+```
+
+Skip it and the QA stage still runs — the tester covers the API and service
+layers and reports explicitly what it could not exercise through the UI.
+`GET /api/browsers?tool=<tester>` (and the note under the composer's selector)
+tells you which of the two it is *before* you create the task.
+
+The alternative is `chrome-devtools`, which needs nothing installed — it runs
+through `npx` — but it is an MCP server with no CLI, so Kiro and Cursor cannot
+use it. It does need a Chrome on the machine.
+
+**Optional**
+
+- **`npm link`** in the project directory puts `honeycomb`, its short alias `hc`
+  and `honeycomb-mcp` on your `PATH`. Without it, invoke by path:
+  `node bin/honeycomb.mjs <cmd>`.
+
 ## Running
 
 ```bash
@@ -17,14 +74,6 @@ npm run setup     # install server and frontend deps (once)
 npm run build     # compile the UI
 npm start         # daemon + UI at http://127.0.0.1:4317
 ```
-
-Requires Node 20+ and at least one agent CLI on your machine. Point Honeycomb at
-your binaries with `HONEYCOMB_CLAUDE_BIN`, `HONEYCOMB_KIRO_BIN` and
-`HONEYCOMB_CODEX_BIN` if they are not where it expects them.
-
-To get `honeycomb` on your `PATH`, run `npm link` in the project directory. That
-gives you three commands: `honeycomb`, its short alias `hc`, and `honeycomb-mcp`
-(the MCP server).
 
 ## CLI
 
@@ -96,8 +145,11 @@ honeycomb cross "add batch delete to the documents screen" \
   --impl kiro --validator claude --wait
 ```
 
-Default verification commands are `npx tsc --noEmit`, `npm run lint` and
-`npm test`. Override with `--verify "cmd1;cmd2"` when the project uses others.
+**No verification commands are hardcoded.** The reviewer works out how *this*
+project builds, checks and tests itself — reading the CI workflow first (the one
+piece of documentation that cannot be stale, because it runs), then the manifest,
+the Makefile and the README. Pin them with `--verify "cmd1;cmd2"` when you want
+exactly those and nothing else.
 
 **Correction loop.** When the reviewer rejects, it has already said exactly what
 is wrong — throwing that away and reimplementing from scratch wastes the most
@@ -170,12 +222,12 @@ round answers the reviewer's critique instead of the tester's.
 choice and the tester uses its shell commands (`open`, `snapshot`, `click @eN`,
 `console`, `screenshot`) rather than its MCP server. The CLI has full parity, so
 the MCP path buys nothing and costs a server process, a version to match and an
-injection step that only two of the three tools accept. Install it once with
+injection step that only half the tools accept. Install it once with
 `npm i -g agent-browser`.
 
 `chrome-devtools` remains available as the MCP option — it needs nothing installed
 (it runs through `npx`), but it has no CLI, which means it cannot be used with
-Kiro at all.
+Kiro or Cursor at all: neither takes an MCP server on the command line.
 
 `GET /api/browsers?tool=<tester>` reports what each choice would actually become
 (`cli` / `mcp` / `none`) plus a note when it had to be downgraded, and the composer
@@ -213,6 +265,7 @@ design ambiguity and seeing two approaches is informative. For normal work, use
 | Claude Code | ✅ `stream-json` | ✅ `agents --json` | ✅ our id | ✅ cost |
 | Kiro CLI | ❌ parsed text | ❌ saved only | ✅ | ✅ cost |
 | Codex CLI | ✅ `exec --json` | ❌ saved only | ✅ its id | ⚠️ tokens |
+| Cursor CLI | ✅ `--output-format stream-json` | ❌ saved only | ✅ its id | ⚠️ tokens |
 
 Kiro splits its output across both streams in a non-obvious way: the answer goes
 to stdout, but the cost footer, the warnings and the session listing go to stderr.
@@ -237,6 +290,26 @@ Codex has three quirks the adapter works around:
 Saved sessions (including the desktop app's) are read from
 `~/.codex/sessions/**/rollout-*.jsonl`, via the `session_meta` on the first line.
 
+Cursor is the closest thing to a second reference adapter — real JSONL, thinking
+deltas, tool calls with arguments and results — with three things of its own:
+
+- **It reports tokens, not cost**, for the same reason Codex does, and with the
+  same consequence: it does not feed the cost totals in the metrics.
+- **It is the only tool that separates writing from executing.** `--mode ask`
+  decides whether it may write, `--force` decides whether it may run commands,
+  and the two are independent — so the four modes map onto it exactly, `verify`
+  (reads, runs the build, writes nothing) included. A blocked call is not hidden
+  from the model, it comes back `rejected`, which usually costs a retry before
+  the agent gives up. `--mode plan` is deliberately unused: it does not restrict
+  a working agent, it replaces it with a planner that executes nothing.
+- **Workspace trust is per directory, and it is asked interactively.** Every run
+  starts in a fresh worktree Cursor has never seen, so the adapter always passes
+  `--trust`; without it the run dies on a prompt nobody can answer, printed as
+  plain text before the JSON stream even starts.
+
+Saved chats are read from `~/.cursor/chats/*/*/meta.json` — `cursor-agent ls` is
+an interactive picker and never returns under a pipe.
+
 ## Model selection
 
 Every tool exposes models differently, and Honeycomb does not hide that:
@@ -246,6 +319,7 @@ Every tool exposes models differently, and Honeycomb does not hide that:
 | Kiro | real, via `chat --list-models` | ✅ 0.05× to 2.4× |
 | Claude Code | curated (aliases + names) | — |
 | Codex | exposes none; free-form field | — |
+| Cursor | real, via `--list-models` | — |
 
 The fact that justifies having a model selector at all is Kiro's multiplier. The
 default is `auto` (1×), but models range from `qwen3-coder-next` at 0.05× to
@@ -269,11 +343,12 @@ many correction rounds were needed, and spend per task broken down by step. It
 exists so you can pick a tool from data instead of impressions — in a small sample
 here, Kiro cost roughly 20× more per run than Claude.
 
-**Cost and tokens do not add up.** Claude and Kiro report credit; Codex reports
-tokens. Aggregating both into one number would produce a meaningless value, so
-each tool appears in the unit it actually uses and the two totals sit side by
-side. The comparison bar only ranks the ones measured in credit — the ones
-measured in tokens get a neutral band instead of showing as zero.
+**Cost and tokens do not add up.** Claude and Kiro report credit; Codex and
+Cursor report tokens. Aggregating both into one number would produce a
+meaningless value, so each tool appears in the unit it actually uses and the two
+totals sit side by side. The comparison bar only ranks the ones measured in
+credit — the ones measured in tokens get a neutral band instead of showing as
+zero.
 
 **Worktree collection** (`honeycomb gc`, button in the Métricas tab) collects only
 what provably has nothing to lose: empty worktrees and already-committed ones.
@@ -316,14 +391,22 @@ WS     /ws                      live events from runs and tasks
 ## MCP server and skill
 
 Honeycomb exposes itself as an MCP server (`server/mcp.mjs`, stdio), which takes
-the comb outside the terminal: Claude Code, Codex, Kiro and Claude Desktop can
-start runs as a typed tool — including the very agents it orchestrates.
+the comb outside the terminal: Claude Code, Codex, Kiro, Cursor and Claude
+Desktop can start runs as a typed tool — including the very agents it
+orchestrates.
 
 ```bash
 npm run mcp                                                   # run in a terminal (debug)
 claude mcp add --scope user honeycomb -- honeycomb-mcp        # Claude Code
 kiro-cli mcp add --name honeycomb --command honeycomb-mcp --scope global
 codex mcp add honeycomb -- honeycomb-mcp                      # Codex
+```
+
+Cursor has no `mcp add` subcommand — it reads `~/.cursor/mcp.json`, so add the
+entry there by hand:
+
+```json
+{ "mcpServers": { "honeycomb": { "command": "honeycomb-mcp" } } }
 ```
 
 Those commands assume `npm link` has been run. Inside this repository the shipped
@@ -413,8 +496,9 @@ reverse proxy without authentication in front.
 Two more things worth knowing before you run it:
 
 - **`full` mode means full.** On Claude Code it maps to `bypassPermissions`, on
-  Kiro to `--trust-all-tools`, on Codex to `danger-full-access`. That is why it is
-  only meant to run inside an isolated worktree.
+  Kiro to `--trust-all-tools`, on Codex to `danger-full-access`, on Cursor to
+  `--force` (its own alias is `--yolo`). That is why it is only meant to run
+  inside an isolated worktree.
 - **Dependencies are shared through symlinks.** Every worktree links to the main
   repository's `node_modules`. If an agent runs `npm install`, it affects the
   others and your own checkout. Acceptable for the expected flow — changing code,
@@ -437,6 +521,7 @@ should never be committed.
 | `HONEYCOMB_CLAUDE_BIN` | `~/.local/bin/claude` |
 | `HONEYCOMB_KIRO_BIN` | `~/.local/bin/kiro-cli` |
 | `HONEYCOMB_CODEX_BIN` | `codex` |
+| `HONEYCOMB_CURSOR_BIN` | `~/.local/bin/cursor-agent` |
 | `HONEYCOMB_URL` | `http://127.0.0.1:4317` (used by the CLI) |
 
 ## License

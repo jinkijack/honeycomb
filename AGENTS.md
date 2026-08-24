@@ -21,9 +21,10 @@ npm run mcp       # MCP server over stdio (for debugging; clients spawn their ow
 
 There is no test suite, linter or typecheck in this repository — `npm test` does
 not exist. Validation is manual: `npm run dev` and exercise it through
-`bin/honeycomb.mjs` or the UI. (The `npx tsc --noEmit` / `npm run lint` /
-`npm test` commands that appear in the code are the **defaults injected into the
-validator's prompt** for the agent's target repo, not commands for this project.)
+`bin/honeycomb.mjs` or the UI. (Commands like `npm test` that appear inside the
+prompt strings are examples handed to the agent for **its** target repo — the
+validator and the QA stage discover the real ones there; none of them are
+commands for this project.)
 
 After `npm link` the CLI is on PATH as `honeycomb` (alias `hc`), and the MCP
 server as `honeycomb-mcp`. Otherwise invoke by path: `node bin/honeycomb.mjs
@@ -32,8 +33,9 @@ server as `honeycomb-mcp`. Otherwise invoke by path: `node bin/honeycomb.mjs
 
 ## Architecture
 
-A local daemon that treats Claude Code, Kiro CLI and Codex CLI as interchangeable
-executors of coding tasks, each running in an isolated git worktree.
+A local daemon that treats Claude Code, Kiro CLI, Codex CLI and Cursor CLI as
+interchangeable executors of coding tasks, each running in an isolated git
+worktree.
 
 ```
 config.mjs → store.mjs (JSON) → bus.mjs → adapters/ → runner.mjs → orchestrator.mjs
@@ -44,7 +46,7 @@ config.mjs → store.mjs (JSON) → bus.mjs → adapters/ → runner.mjs → orc
 **`bus.mjs` is the axis of the design.** Every adapter translates its CLI's output
 into the same event vocabulary (`status`, `text`, `thinking`, `tool_use`,
 `tool_result`, `result`, `error`, `log`). That is what lets the orchestrator, UI
-and CLI treat all three tools as one abstraction. Events are numbered by `seq` and
+and CLI treat all four tools as one abstraction. Events are numbered by `seq` and
 written to `data/logs/<runId>.ndjson`, which gives replay
 (`GET /api/runs/:id/events?fromSeq=`) — the CLI and the MCP server poll that
 endpoint instead of using the WebSocket.
@@ -58,7 +60,8 @@ new daemon can recognise orphans. To add a tool: write the adapter, register it 
 does not exist.
 
 Each adapter maps the 4 permission modes (`ro`, `verify`, `rw`, `full`) onto its
-CLI's flags (`PERMISSION` in claude, `TRUST` in kiro, `SANDBOX` in codex).
+CLI's flags (`PERMISSION` in claude, `TRUST` in kiro, `SANDBOX` in codex, `MODE`
+in cursor).
 `verify` = reads and executes but does not write; it is the validator's mode.
 `full` only makes sense inside an isolated worktree.
 
@@ -102,6 +105,16 @@ The `crossValidationTemplate` and `raceTemplate` prompts are long and deliberate
 `VENCEDOR: <id>`). Changing that text changes product behaviour — treat it as
 code, not as commentary.
 
+**Nothing in the flow assumes a stack.** There is no default verification command
+list any more: the reviewer is told to find the project's own (CI workflow first —
+it cannot be stale, because it runs — then the manifest, Makefile, README), and
+the QA stage opens with a **Part 0** that makes the tester name the stack, the
+boot command, the infrastructure and *how that stack takes a port* before it
+tries anything. `STACKS` and `ENTRY_POINTS` in `qa.mjs` are the checklist it
+recognises the project by; they are a starting point handed to the agent, not a
+detector on Honeycomb's side. `PORT` is a Node convention, which is exactly the
+trap the port question exists to close.
+
 **`qa.mjs`** — the optional third stage, `crossValidationTemplate({ qa: true })`,
 which turns the chain into `impl → review → qa`. The reviewer answers "is this
 code right"; the tester answers "does it work when you run it". It runs in `full`
@@ -119,10 +132,11 @@ would cost the artefacts.
 A browser reaches the tester one of two ways, and the default is the simpler one.
 **`agent-browser` is driven through its shell CLI**, not its MCP server: the CLI
 has full parity, there is no server process to start and no version to match, and
-it is the only path that works on all three tools — Kiro included, which takes no
-MCP configuration on the command line. `chrome-devtools` is the MCP option, kept
-because it needs nothing installed (it runs through `npx`), at the cost of having
-no CLI and therefore no Kiro.
+it is the only path that works on all four tools — Kiro and Cursor included,
+neither of which takes MCP configuration on the command line. `chrome-devtools`
+is the MCP option, kept because it needs nothing installed (it runs through
+`npx`), at the cost of having no CLI and therefore reaching neither of those
+two (`NO_CLI_MCP` in `qa.mjs`).
 
 `resolveBrowser(name, { tool })` returns what the tester will *actually* have
 rather than what was asked for: the MCP servers to inject (usually none), the
@@ -148,9 +162,24 @@ uncommitted", which is the question `gc.mjs` asks. `node_modules`/`vendor`/`.ven
 `target` are **symlinked** (copying would kill parallelism); removal undoes the
 symlinks before `git worktree remove` so it never deletes the main repo's
 `node_modules`. `worktreeDiff` runs `git add -AN` so new files appear without a
-commit, and explicitly excludes the dependency symlinks — without that they show
-up as new files in every agent diff. `findLandedIn` compares blob hashes against
-the refs to detect work already taken to another branch out of band.
+commit. `findLandedIn` compares blob hashes against the refs to detect work
+already taken to another branch out of band.
+
+**`linkedDepDirs` is why anything that stages files has to ask first.** The
+dependency directories enter the worktree as *symlinks*, and a `.gitignore` entry
+written `node_modules/` matches a directory, not a link — git sees a plain file,
+the ignore rule misses, and `git add -A` stages a `120000` blob whose content is
+an absolute path on the machine that produced it. `worktreeDiff` and
+`commitWorktree` both exclude what that helper reports, and it reports only what
+is provably our symlink: some projects track `vendor/` as a real directory, and
+excluding that would erase genuine agent work. They share the helper because they
+did not share it before, and the copy that was missing from `commitWorktree` put
+the symlink into every auto-commit while the diff on screen stayed clean.
+`commitWorktree` also runs `git rm --cached` on those paths, which is not
+redundant: agents are told to commit their own work and they use `git add -A`
+too, so excluding the link from our `add` would leave one they already tracked in
+the tree forever. Dropping it from the index makes the next Honeycomb commit the
+one that repairs the branch.
 
 **`store.mjs`** — two JSON tables (`data/runs.json`, `data/tasks.json`) rewritten
 whole on every `put`/`patch` (tmp + rename). Adequate for dozens of records/day;
@@ -205,7 +234,8 @@ The CLI contract, which must be preserved: events on **stderr**, result on
 `HONEYCOMB_TASK_BUDGET` / `HONEYCOMB_DAILY_BUDGET` (0 = off),
 `HONEYCOMB_TRANSIENT_RETRIES` (2), `HONEYCOMB_TIMEOUT_MS` (20min),
 `HONEYCOMB_DATA_DIR`, `HONEYCOMB_WORKTREE_DIR`,
-`HONEYCOMB_CLAUDE_BIN` / `HONEYCOMB_KIRO_BIN` / `HONEYCOMB_CODEX_BIN`,
+`HONEYCOMB_CLAUDE_BIN` / `HONEYCOMB_KIRO_BIN` / `HONEYCOMB_CODEX_BIN` /
+`HONEYCOMB_CURSOR_BIN`,
 `HONEYCOMB_URL` (used by the CLI and the MCP server).
 
 The QA stage passes `PORT` and `HONEYCOMB_QA_PORTS` **into** the tester's process;
@@ -224,6 +254,19 @@ they are reserved per attempt, not read from the environment.
 - **Claude Code** is the reference adapter (NDJSON, session id imposed by us, live
   sessions via `agents --json`, real cost) — the normalized event format was
   designed from what it delivers.
+- **Cursor** (`cursor-agent -p --output-format stream-json`) emits real JSONL and
+  reports **tokens, not cost**, like Codex. Two things are specific to it. It is
+  the only tool that separates "may write" from "may run commands" — `--mode ask`
+  and `--force` are independent axes, and crossing them lands exactly on the four
+  modes, `verify` included; `--mode plan` is deliberately unused, because it
+  turns the agent into a planner that executes nothing. And **workspace trust is
+  per directory and asked interactively**: every run starts in a worktree Cursor
+  has never seen, so `--trust` is always passed or the run dies on a prompt
+  nobody can answer. A tool call arrives as an object with one key naming the
+  tool (`readToolCall`, `shellToolCall`, …), around forty of them, so the key is
+  read as the name rather than enumerated. Saved chats come from
+  `~/.cursor/chats/*/*/meta.json` — `cursor-agent ls` is an interactive picker
+  and never returns under a pipe.
 
 ## Documents
 

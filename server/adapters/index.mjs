@@ -1,8 +1,9 @@
 import { claude } from './claude.mjs';
 import { kiro } from './kiro.mjs';
 import { codex } from './codex.mjs';
+import { cursor } from './cursor.mjs';
 
-export const adapters = { claude, kiro, codex };
+export const adapters = { claude, kiro, codex, cursor };
 
 export function getAdapter(name) {
   const a = adapters[name];

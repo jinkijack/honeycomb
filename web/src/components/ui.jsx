@@ -42,6 +42,7 @@ export const TOOL_META = {
   claude: { label: 'Claude Code', color: 'text-coral', bg: 'bg-coral/10', ring: 'ring-coral/30', dot: 'bg-coral' },
   kiro: { label: 'Kiro CLI', color: 'text-lavender', bg: 'bg-lavender/10', ring: 'ring-lavender/30', dot: 'bg-lavender' },
   codex: { label: 'Codex CLI', color: 'text-pollen', bg: 'bg-pollen/10', ring: 'ring-pollen/30', dot: 'bg-pollen' },
+  cursor: { label: 'Cursor CLI', color: 'text-ice', bg: 'bg-ice/10', ring: 'ring-ice/30', dot: 'bg-ice' },
 };
 
 export const STATUS_META = {

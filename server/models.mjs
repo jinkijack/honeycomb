@@ -16,6 +16,9 @@ const exec = promisify(execFile);
  *   claude accepts an alias ('opus', 'sonnet') or a full name. There is no
  *          listing command, so the list here is curated and may go stale.
  *   codex  exposes no list at all. Free-form field, no invented suggestions.
+ *   cursor a real list, via `--list-models`, but plain text and without prices —
+ *          the same model appears in `-low`/`-high`/`-fast` variants, which is
+ *          effort and speed encoded in the id rather than a separate flag.
  *
  * `source` says where each list came from, and the UI uses it to make clear when
  * the field accepts arbitrary text.
@@ -24,6 +27,7 @@ const exec = promisify(execFile);
 const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g;
 
 let kiroCache = { at: 0, models: null };
+let cursorCache = { at: 0, models: null };
 const CACHE_MS = 5 * 60 * 1000;
 
 async function kiroModels() {
@@ -58,6 +62,40 @@ async function kiroModels() {
 }
 
 /**
+ * `cursor-agent --list-models` prints `<id> - <Label>` lines under a header, and
+ * marks the account default with `(current, default)` inside the label. No JSON
+ * flag exists, so the parse is on the text — but the shape is stable enough that
+ * a change would produce an empty list, not a wrong one.
+ */
+async function cursorModels() {
+  if (cursorCache.models && Date.now() - cursorCache.at < CACHE_MS) return cursorCache.models;
+
+  try {
+    const { stdout } = await exec(BIN.cursor, ['--list-models'], {
+      timeout: 25000,
+      maxBuffer: 1024 * 1024,
+    });
+
+    const models = [];
+    for (const raw of stdout.replace(ANSI, '').split('\n')) {
+      const m = raw.trim().match(/^([\w.-]+)\s+-\s+(.+)$/);
+      if (!m) continue;
+      const isDefault = /\(current, default\)/i.test(m[2]);
+      models.push({
+        id: m[1],
+        label: m[2].replace(/\s*\(current, default\)\s*/i, '').trim(),
+        default: isDefault,
+      });
+    }
+
+    cursorCache = { at: Date.now(), models };
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Curated list. Claude Code accepts aliases that always point at the newest
  * model in that family, and full names too — the aliases are the more stable
  * choice to store in a task that will be re-run later.
@@ -84,6 +122,18 @@ export async function listModels(tool) {
       };
     }
 
+    case 'cursor': {
+      const models = await cursorModels();
+      return {
+        tool,
+        source: models.length ? 'cli' : 'indisponivel',
+        freeText: true,
+        hasRates: false,
+        models,
+        note: 'O Cursor codifica esforco e velocidade no proprio id (-low/-high/-xhigh, -fast).',
+      };
+    }
+
     case 'claude':
       return { tool, source: 'curado', freeText: true, hasRates: false, models: CLAUDE_MODELS };
 
@@ -105,7 +155,7 @@ export async function listModels(tool) {
 }
 
 export async function listAllModels() {
-  const tools = ['claude', 'kiro', 'codex'];
+  const tools = ['claude', 'kiro', 'codex', 'cursor'];
   const out = {};
   await Promise.all(tools.map(async (t) => { out[t] = await listModels(t); }));
   return out;

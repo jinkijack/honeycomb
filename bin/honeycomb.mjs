@@ -47,8 +47,8 @@ const palette = (on) => ({
 const c = palette(canColor(process.stdout));
 const e = palette(canColor(process.stderr));
 
-const TOOL_COLOR = { claude: c.yellow, kiro: c.violet, codex: c.green };
-const TOOL_COLOR_ERR = { claude: e.yellow, kiro: e.violet, codex: e.green };
+const TOOL_COLOR = { claude: c.yellow, kiro: c.violet, codex: c.green, cursor: c.cyan };
+const TOOL_COLOR_ERR = { claude: e.yellow, kiro: e.violet, codex: e.green, cursor: e.cyan };
 
 function err(msg, code = EXIT.USAGE) {
   console.error(e.red(`erro: ${msg}`));
@@ -350,7 +350,8 @@ const commands = {
       implementerModel: str(flags['impl-model']),
       validatorModel: str(flags['validator-model']),
       maxRounds: num(flags.rounds),
-      // --verify "cmd1;cmd2" overrides the default verification commands
+      // --verify "cmd1;cmd2" pins the verification commands; without it the
+      // reviewer discovers the project's own from the CI and the manifest
       verifyCommands: flags.verify && flags.verify !== true
         ? String(flags.verify).split(';').map((s) => s.trim()).filter(Boolean)
         : undefined,
