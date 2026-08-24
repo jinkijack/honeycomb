@@ -1,6 +1,6 @@
 ---
 name: honeycomb
-description: Delegates coding work to another agent CLI (Kiro, Codex, Codex) in an isolated git worktree, with independent review and a verdict. Use when the request is to implement something worth having checked by a second agent, when you want tasks running in parallel without colliding, or when the user mentions honeycomb, the comb, cross-validation, cross, race, or delegating to Kiro/Codex.
+description: Delegates coding work to another agent CLI (Kiro, Codex, Claude Code, Cursor) in an isolated git worktree, with independent review, an optional stage that boots the project and tests it, and a verdict. Use when the request is to implement something worth having checked by a second agent, when it matters that the change works when run and not only that it compiles, when you want tasks running in parallel without colliding, or when the user mentions honeycomb, the comb, cross-validation, cross, race, QA, or delegating to Kiro/Codex/Cursor.
 ---
 
 # Honeycomb
@@ -30,6 +30,7 @@ costs twice.
 | situation | tool |
 |---|---|
 | implement something that needs checking | `honeycomb_cross` |
+| ...and it matters that it works when run | `honeycomb_cross` with `qa: true` |
 | a task on one tool, no review | `honeycomb_run` |
 | the task has genuine design ambiguity | `honeycomb_race` |
 | a question about work that already ran | `honeycomb_status` |
@@ -38,12 +39,52 @@ costs twice.
 propose it when seeing two approaches is genuinely informative, and state the cost
 first.
 
+## The QA stage (`qa: true`)
+
+The reviewer answers *is this code right*: it reads the diff and runs the
+project's build, checks and tests. It does not answer *does it work when you run
+it* — nobody started the application. `qa: true` appends a third agent that does:
+it boots the project on reserved ports, derives a test plan from what the diff
+actually changed, and exercises it — HTTP calls for endpoints, a real message on
+the broker for consumers, a browser for screens — plus the regression around it.
+
+**Turn it on** for a change with a runtime surface: a new or altered endpoint, a
+consumer, a screen, a migration, anything touching boot or configuration. **Leave
+it off** for a refactor with tests covering it, a documentation change, or work
+whose whole verification is static. It costs a third agent and the wall-clock time
+of starting a project, which plenty of changes do not justify.
+
+A QA rejection re-enters the loop through the reviewer, not straight back to the
+tester — a fix written to close a defect is code nobody has read yet. So a QA
+round costs implementer + reviewer + tester.
+
+**Nothing presumes a stack.** The tester identifies the project first — manifest,
+boot command, infrastructure, and how *that* stack takes a port — before trying
+anything, so Maven, Django, Go and Rails work the same way Node does. Pass
+`startCommand` and `baseUrl` when you already know them: it skips the discovery
+and removes a way to get it wrong. `verifyCommands` likewise only pins what the
+reviewer would otherwise find on its own; leave it out unless you want exactly
+those commands and no others.
+
+**The browser is a prerequisite, not a given.** The default `agent-browser` has to
+be installed (`npm i -g agent-browser` plus `agent-browser install`), and
+`chrome-devtools` is an MCP server that Kiro and Cursor cannot receive on the
+command line. When the choice cannot be delivered the step comes back with a
+`note` saying so — read it. A missing browser is invisible from inside the prompt:
+the tester never sees the tools and reports the screen as untestable, which looks
+exactly like a screen that is broken.
+
+Artefacts — the plan, logs, screenshots, new Bruno requests — are committed to the
+worktree branch under `.honeycomb/qa/`, so they survive the run.
+
 **Mode** is the agent's permission: `ro` only reads; `verify` reads and runs
 build/lint/tests but does not write (the reviewer's mode); `rw` edits without a
 shell; `full` is total autonomy and only justifies itself in an isolated worktree.
 
 **Model** matters on Kiro, where the multiplier runs from 0.05× to 2.4×. Before
-sending long work there, check `honeycomb_models`. For a cheap review of an
+sending long work there, check `honeycomb_models`. Cursor encodes effort and speed
+in the model id itself (`-low`/`-high`/`-xhigh`, `-fast`), so the choice there is
+the same knob under another name. For a cheap review of an
 expensive implementation (or the reverse), `cross` accepts a model per role.
 
 ## Reading the result
@@ -55,6 +96,12 @@ with the user whether another round is worth it, whether the spec needs adjustin
 or whether you should take it on yourself. `cross` already sends the critique back
 to the implementer on its own up to `maxRounds` — if a rejection reached you, the
 rounds are spent.
+
+Read *which* step rejected. The reviewer refusing means the code is wrong on
+inspection. The tester refusing means it was executed and misbehaved, or could not
+be executed at all — and "I could not boot the project" is a legitimate QA
+rejection that says nothing about the code. The step's report distinguishes them;
+do not collapse both into "it failed".
 
 The work stays in the worktree, **not** on the user's branch. Flow after approval:
 `honeycomb_diff` to see what changed → `honeycomb_commit` to consolidate on the

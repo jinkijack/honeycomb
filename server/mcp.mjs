@@ -194,6 +194,15 @@ function taskSummary(task) {
         (s.rounds > 1 ? ` · ${s.rounds} rodadas` : '') +
         (s.runId ? `\n      run ${s.runId}` : '')
     );
+    /**
+     * The step note is where a downgraded choice lands — most often a browser
+     * that was asked for and could not be delivered. It has to be printed here
+     * for the same reason it is printed in the CLI: a capability that is missing
+     * is invisible from inside the prompt, so the tester never sees the tools and
+     * reports the screen as untestable, and the agent reading this summary would
+     * have no way to tell that from a screen that is genuinely broken.
+     */
+    if (s.note) lines.push(`      ! ${s.note}`);
   }
   if (task.winner) {
     lines.push('', `vencedor: ${task.winner.stepId} (branch ${task.winner.branch})`);
@@ -226,8 +235,12 @@ const server = new McpServer(
     instructions:
       'Honeycomb orquestra CLIs de agentes (Claude Code, Kiro, Codex, Cursor) em worktrees git ' +
       'isolados. Use honeycomb_cross para implementar algo com revisão independente, ' +
-      'honeycomb_run para uma tarefa numa ferramenta só. Um VEREDITO: REPROVADO é ' +
-      'resultado legítimo, não erro. Nada é commitado na sua branch sem honeycomb_commit.',
+      'honeycomb_run para uma tarefa numa ferramenta só. honeycomb_cross com qa: true ' +
+      'acrescenta uma terceira etapa que SOBE o projeto e exercita os fluxos alterados — ' +
+      'a revisão responde "o código está certo", o QA responde "funciona rodando". ' +
+      'Nenhuma etapa presume stack: o agente descobre como buildar, testar e subir lendo o repo. ' +
+      'Um VEREDITO: REPROVADO é resultado legítimo, não erro. ' +
+      'Nada é commitado na sua branch sem honeycomb_commit.',
   }
 );
 
@@ -495,8 +508,9 @@ server.registerTool(
     title: 'Implementar com validação cruzada',
     description:
       'O padrão do dia a dia. Uma ferramenta implementa a spec num worktree isolado com autonomia ' +
-      'total; outra entra no MESMO worktree em modo verify, é obrigada a rodar typecheck/lint/teste, ' +
-      'relatar o que executou, e termina com VEREDITO: APROVADO ou REPROVADO. Se reprovar, a crítica ' +
+      'total; outra entra no MESMO worktree em modo verify, é obrigada a descobrir e rodar a ' +
+      'verificação real do projeto (CI, manifesto, Makefile — seja qual for a stack), relatar o ' +
+      'que executou, e termina com VEREDITO: APROVADO ou REPROVADO. Se reprovar, a crítica ' +
       'volta ao implementador, que retrabalha no worktree que já produziu, até maxRounds rodadas. ' +
       'REPROVADO é resultado, não erro — significa que o revisor rodou a verificação e recusou. ' +
       'Com qa: true entra uma terceira etapa que sobe o projeto e executa os fluxos alterados; ' +
