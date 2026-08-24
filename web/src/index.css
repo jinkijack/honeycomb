@@ -50,6 +50,24 @@
   --color-peach: #ee9b70;    /* parameter */
   --color-ice: #57d1eb;      /* class name → Cursor CLI */
 
+  /**
+   * The two below are NOT from Hiberbee — they are the only additions to the
+   * palette, and they exist because the role of a step (implementar, validar,
+   * testar) needed a channel of its own.
+   *
+   * Every syntax colour above was already spoken for: coral/lavender/pollen/ice
+   * name the four tools, azure/ember/peach/pollen name the statuses. Reusing one
+   * would make a chip mean two things in the same row — a "validação" tag in
+   * azure sitting next to a pulsing azure "rodando" badge. Magenta and teal are
+   * the hues the theme never uses, which is exactly why they read as a third
+   * dimension instead of a repetition.
+   *
+   * `impl` takes honey, the brand accent: no tool wears it, and the step that
+   * produces the work is the one that fills the cell.
+   */
+  --color-orchid: #cf8ee0;   /* → validação */
+  --color-mint: #55cfa8;     /* → teste (QA) */
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;
 }

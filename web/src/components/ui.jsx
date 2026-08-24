@@ -45,6 +45,56 @@ export const TOOL_META = {
   cursor: { label: 'Cursor CLI', color: 'text-ice', bg: 'bg-ice/10', ring: 'ring-ice/30', dot: 'bg-ice' },
 };
 
+/**
+ * Colour and name per STEP ROLE.
+ *
+ * A run answers two independent questions — which tool executed it, and what it
+ * was for — and the list used to answer only the first. Reading a `cross` meant
+ * decoding three near-identical rows by the `/ impl`, `/ review`, `/ qa` suffix
+ * buried in the label.
+ *
+ * Role gets its own channel: a squared, uppercase chip, deliberately unlike the
+ * rounded status pill and the hexagon that marks the tool, so the three can sit
+ * in one row without being mistaken for each other.
+ */
+export const STEP_META = {
+  impl: { label: 'implementação', cls: 'bg-honey/10 text-honey-soft ring-honey/30', dot: 'bg-honey' },
+  review: { label: 'validação', cls: 'bg-orchid/10 text-orchid ring-orchid/30', dot: 'bg-orchid' },
+  qa: { label: 'teste', cls: 'bg-mint/10 text-mint ring-mint/30', dot: 'bg-mint' },
+  // race only, and race has no UI yet — nectar is the brand family without
+  // being honey, and it never shares a flow with `impl`
+  judge: { label: 'julgamento', cls: 'bg-nectar/10 text-nectar ring-nectar/30', dot: 'bg-nectar' },
+};
+
+/**
+ * Step id → role.
+ *
+ * `race` numbers its competitors `impl_kiro`, `impl_claude_1`, so the match is on
+ * the prefix; anything unrecognised has no role rather than a wrong one.
+ */
+export function stepRole(stepId) {
+  if (!stepId) return null;
+  if (stepId === 'review' || stepId === 'qa' || stepId === 'judge') return stepId;
+  if (stepId === 'impl' || stepId.startsWith('impl_')) return 'impl';
+  return null;
+}
+
+/** The role chip. Falls back to the raw step id, which is still better than nothing. */
+export function StepTag({ stepId, title, className = '' }) {
+  const role = stepRole(stepId);
+  const m = STEP_META[role];
+  const cls = m ? m.cls : 'bg-wax-500/10 text-wax-500 ring-wax-500/25';
+  return (
+    <span
+      title={title || stepId}
+      className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 font-mono text-[10px]
+        font-semibold tracking-wider uppercase ring-1 ring-inset ${cls} ${className}`}
+    >
+      {m ? m.label : stepId}
+    </span>
+  );
+}
+
 export const STATUS_META = {
   queued: { label: 'na fila', cls: 'bg-wax-500/10 text-wax-300 ring-wax-500/30' },
   preparing: { label: 'preparando', cls: 'bg-azure/10 text-azure ring-azure/30', pulse: true },
