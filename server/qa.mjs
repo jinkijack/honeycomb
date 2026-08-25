@@ -284,6 +284,15 @@ export function qaPrompt({
   baseUrl = null,
   notes = null,
   regressionCommands = null,
+  /**
+   * Defaults are the orchestrator's interpolation tokens: inside a task it fills
+   * them from the step results. A standalone QA run has no steps to interpolate
+   * from and passes the real values — including, for `reviewOutput`, the honest
+   * admission that nobody reviewed this yet.
+   */
+  implOutput = '{{steps.impl.output}}',
+  reviewOutput = '{{steps.review.output}}',
+  implDiff = '{{steps.impl.diff}}',
 }) {
   // `browser` is a resolved plan from `resolveBrowser`, not a preset name: what
   // goes in the prompt has to be what the tester will really find, not what was
@@ -307,13 +316,13 @@ export function qaPrompt({
     spec,
     '',
     '## Relato do implementador',
-    '{{steps.impl.output}}',
+    implOutput,
     '',
     '## Parecer do revisor',
-    '{{steps.review.output}}',
+    reviewOutput,
     '',
     '## Arquivos alterados',
-    '{{steps.impl.diff}}',
+    implDiff,
     '',
     '## Parte 0 — reconheca o projeto (antes de qualquer outra coisa)',
     '',

@@ -84,6 +84,7 @@ async function call(method, path, body) {
 const OPTIONS = {
   // with a value
   age: { type: 'string' },
+  as: { type: 'string' },
   agents: { type: 'string' },
   'base-url': { type: 'string' },
   browser: { type: 'string' },
@@ -99,6 +100,7 @@ const OPTIONS = {
   mode: { type: 'string' },
   model: { type: 'string' },
   notes: { type: 'string' },
+  of: { type: 'string' },
   prompt: { type: 'string' },
   'qa-rounds': { type: 'string' },
   repo: { type: 'string' },
@@ -222,20 +224,56 @@ const commands = {
   async run({ flags, pos }) {
     const [tool, ...rest] = pos;
     const prompt = flags.prompt || rest.join(' ');
-    if (!tool || !prompt) err('uso: honeycomb run <tool> "<prompt>" [--mode ro|verify|rw|full] [--wait]');
+    const role = str(flags.as) || 'agent';
 
-    const { runId } = await call('POST', '/api/runs', {
-      tool,
-      prompt,
-      repo: flags.repo || process.cwd(),
-      mode: flags.mode || 'ro',
-      isolation: flags.isolation || 'worktree',
-      model: flags.model,
-      effort: flags.effort,
-      sessionId: flags.session,
-      resume: !!flags.resume,
-      label: flags.label || oneLine(prompt, 50),
-    });
+    if (!tool) err('uso: honeycomb run <tool> "<prompt>" [--mode ro|verify|rw|full] [--wait]');
+    if (role === 'agent' && !prompt) {
+      err('uso: honeycomb run <tool> "<prompt>" [--mode ro|verify|rw|full] [--wait]');
+    }
+    if (role !== 'agent' && !flags.of) {
+      err(`uso: honeycomb run <tool> --as ${role} --of <runId> [--wait]`);
+    }
+
+    /**
+     * A role run is defined by what it is judging, not by a prompt: the daemon
+     * builds the prompt, the mode and the directory from the target run, exactly
+     * as the flow would. Sending mode or isolation here would silently contradict
+     * that, so they are not sent.
+     */
+    const body =
+      role === 'agent'
+        ? {
+            tool,
+            prompt,
+            repo: flags.repo || process.cwd(),
+            mode: flags.mode || 'ro',
+            isolation: flags.isolation || 'worktree',
+            model: flags.model,
+            effort: flags.effort,
+            sessionId: flags.session,
+            resume: !!flags.resume,
+            label: flags.label || oneLine(prompt, 50),
+          }
+        : {
+            tool,
+            role,
+            of: str(flags.of),
+            // free text after the tool becomes the spec being judged, when the
+            // target run's own prompt is not the right description
+            spec: prompt || null,
+            model: flags.model,
+            label: str(flags.label),
+            verifyCommands: flags.verify && flags.verify !== true
+              ? String(flags.verify).split(';').map((x) => x.trim()).filter(Boolean)
+              : undefined,
+            browser: str(flags.browser),
+            startCommand: str(flags['start-cmd']),
+            baseUrl: str(flags['base-url']),
+            notes: str(flags.notes),
+          };
+
+    const { runId, note } = await call('POST', '/api/runs', body);
+    if (note) console.error(e.yellow(`  ${note}`));
 
     if (!flags.wait) {
       console.log(runId);
@@ -514,6 +552,45 @@ const commands = {
     }
   },
 
+  /**
+   * Restart a flow from where it broke.
+   *
+   * The plan is printed before anything is fired, because the whole reason this
+   * exists is money: it is here to avoid re-implementing code that already
+   * exists, and it would be a poor trade to hide which steps it is about to pay
+   * for a second time.
+   */
+  async restart({ pos, flags }) {
+    const [taskId] = pos;
+    if (!taskId) err('uso: honeycomb restart <taskId> [--wait]');
+
+    const plan = await call('GET', `/api/tasks/${taskId}/restart`);
+    if (flags.json && !flags.wait) return console.log(JSON.stringify(plan, null, 2));
+
+    console.error(c.bold(oneLine(plan.title, 60)));
+    if (plan.keep.length) console.error(c.green(`  reaproveita: ${plan.keep.join(', ')}`));
+    if (plan.rerun.length) {
+      console.error(c.yellow(`  refaz:       ${plan.rerun.map((r) => `${r.id} (${r.status})`).join(', ')}`));
+    }
+    for (const m of plan.missing) {
+      console.error(c.red(`  ! "${m.stepId}" precisa do worktree de "${m.from}": ${m.reason}`));
+    }
+    if (!plan.rerun.length) err('nada a refazer: todos os passos ja concluiram', EXIT.USAGE);
+    // the daemon refuses this too; catching it here keeps the reason next to the
+    // plan that explains it, instead of a second error further down the output
+    if (plan.missing.length) {
+      err('o codigo que seria reaproveitado nao esta mais no disco — rode a task inteira de novo', EXIT.USAGE);
+    }
+
+    await call('POST', `/api/tasks/${taskId}/restart`);
+    if (!flags.wait) return console.log(taskId);
+
+    const done = await followTask(taskId, { quiet: flags.quiet });
+    if (flags.json) console.log(JSON.stringify(done, null, 2));
+    else printTaskSummary(done);
+    process.exit(taskExit(done));
+  },
+
   async status({ pos, flags }) {
     const [taskId] = pos;
     if (!taskId) err('uso: honeycomb status <taskId> [--wait]');
@@ -535,6 +612,8 @@ ${c.bold('ferramentas e sessões')}
 
 ${c.bold('runs')}
   run <tool> "<prompt>" [opções]        dispara um agente
+  run <tool> --as validator --of <runId>    revisa o trabalho daquele run
+  run <tool> --as qa --of <runId>           sobe o projeto e testa aquele run
   watch <runId>                         acompanha um run em andamento
   runs [--limit N]                      lista runs
   show <runId>                          detalhe e output
@@ -556,8 +635,15 @@ ${c.bold('orquestração')}
   race "<spec>" [--agents a,b --judge c]    N agentes competem, um juiz escolhe
   task <arquivo.json|->                     grafo arbitrário de passos
   tasks / status <taskId>                   lista / acompanha
+  restart <taskId>                          refaz só o que faltou, reaproveitando
+                                            os worktrees já produzidos
 
-${c.bold('etapa de QA')} ${c.dim('(opcional, no cross)')}
+${c.bold('papéis avulsos')} ${c.dim('(as etapas do cross, sobre trabalho que já existe)')}
+  --as validator|qa       papel do run; exige --of
+  --of <runId>            run cujo worktree será revisado ou testado
+  ${c.dim('o prompt, o modo e o diretório vêm do alvo — texto livre vira a spec julgada')}
+
+${c.bold('etapa de QA')} ${c.dim('(no cross com --qa, e no run --as qa)')}
   --qa                    liga a etapa: sobe o projeto e executa o que mudou
   --tester X              agente testador (padrão: claude)
   --tester-model M        modelo do testador

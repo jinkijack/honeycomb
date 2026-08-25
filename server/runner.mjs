@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { getAdapter } from './adapters/index.mjs';
+import { killTreeHard } from './proc.mjs';
 import { emit, closeRunLog } from './bus.mjs';
 import { runs } from './store.mjs';
 import { DEFAULT_TIMEOUT_MS, MAX_CONCURRENT, TRANSIENT_RETRIES } from './config.mjs';
@@ -9,6 +10,17 @@ import { createWorktree, removeWorktree, worktreeDiff, commitWorktree } from './
 
 /** Live runs, for cancellation. */
 const active = new Map();
+
+/**
+ * Runs the user stopped on purpose.
+ *
+ * The process still has to close before the run finishes, and by then the exit
+ * is non-zero — so the close handler would write `failed` over the `cancelled`
+ * that the cancel itself set. `cancelled` is a distinct state precisely so "I
+ * stopped it" reads differently from "it broke"; without this the distinction
+ * survived only until the process noticed it had been killed.
+ */
+const cancelled = new Set();
 
 /* ------------------------------------------------------------- concurrency */
 
@@ -207,7 +219,8 @@ export async function startRun({
       }
     }
 
-    const status = result.ok ? 'done' : 'failed';
+    const wasCancelled = cancelled.delete(runId);
+    const status = wasCancelled ? 'cancelled' : result.ok ? 'done' : 'failed';
     runs.patch(runId, {
       status,
       output: result.output,
@@ -248,11 +261,13 @@ export async function startRun({
 export function cancelRun(runId) {
   const child = active.get(runId);
   if (!child) return false;
-  child.kill('SIGTERM');
-  setTimeout(() => {
-    if (active.has(runId)) child.kill('SIGKILL');
-  }, 5000);
-  runs.patch(runId, { status: 'cancelled', pid: null, finishedAt: Date.now() });
+
+  cancelled.add(runId);
+  // the whole group, not just the launcher: these CLIs fork a worker, and
+  // signalling only the direct child leaves it running — and billing
+  killTreeHard(child);
+
+  runs.patch(runId, { status: 'cancelled', pid: null });
   emit(runId, { type: 'status', tool: runs.get(runId)?.tool, status: 'cancelled' });
   return true;
 }

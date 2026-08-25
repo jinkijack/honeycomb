@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BIN } from '../config.mjs';
+import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -173,8 +174,7 @@ export const codex = {
 
     const child = spawn(BIN.codex, args, {
       cwd,
-      // stdin closed: with stdin open Codex sits waiting for extra input
-      stdio: ['ignore', 'pipe', 'pipe'],
+      ...SPAWN_OPTS,
       env: { ...process.env, ...(env || {}), NO_COLOR: '1' },
     });
 
@@ -300,8 +300,7 @@ export const codex = {
       if (timeoutMs) {
         timer = setTimeout(() => {
           onEvent({ type: 'error', tool: 'codex', text: `timeout apos ${timeoutMs}ms` });
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 5000);
+          killTreeHard(child);
         }, timeoutMs);
       }
 

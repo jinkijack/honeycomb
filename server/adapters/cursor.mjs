@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BIN } from '../config.mjs';
+import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -282,8 +283,7 @@ export const cursor = {
 
     const child = spawn(BIN.cursor, args, {
       cwd,
-      // stdin closed: with it open cursor-agent waits for extra input
-      stdio: ['ignore', 'pipe', 'pipe'],
+      ...SPAWN_OPTS,
       env: { ...process.env, ...(env || {}), NO_COLOR: '1', FORCE_COLOR: '0' },
     });
 
@@ -403,8 +403,7 @@ export const cursor = {
       if (timeoutMs) {
         timer = setTimeout(() => {
           onEvent({ type: 'error', tool: 'cursor', text: `timeout apos ${timeoutMs}ms` });
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 5000);
+          killTreeHard(child);
         }, timeoutMs);
       }
 

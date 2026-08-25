@@ -477,28 +477,68 @@ server.registerTool(
       'Roda uma tarefa numa ferramenta, por padrão num worktree git isolado com branch própria — ' +
       'seu working tree não é tocado. Modos: ro (só lê), verify (lê e executa build/teste, não ' +
       'escreve), rw (edita sem shell), full (autonomia total, só faz sentido isolado). ' +
-      'Para trabalho que precisa ser conferido, prefira honeycomb_cross.',
+      'Para trabalho que precisa ser conferido, prefira honeycomb_cross. ' +
+      'Com role validator ou qa o run assume um papel do fluxo sobre trabalho que JÁ existe: ' +
+      'o prompt, o modo e o diretório vêm do run alvo (of), não de você — é assim que se revisa ' +
+      'ou testa de novo sem reimplementar.',
     inputSchema: {
       tool: z.enum(['claude', 'kiro', 'codex', 'cursor']),
-      prompt: z.string().describe('A tarefa, escrita para o agente que vai executá-la.'),
+      role: z
+        .enum(['agent', 'validator', 'qa'])
+        .default('agent')
+        .describe(
+          'agent (padrão) executa o seu prompt. validator revisa o worktree do run "of" em modo ' +
+            'verify e termina com VEREDITO. qa sobe o projeto daquele worktree em portas ' +
+            'reservadas e exercita o que mudou. validator e qa exigem "of".'
+        ),
+      of: z
+        .string()
+        .optional()
+        .describe(
+          'Id do run cujo worktree será revisado ou testado. Obrigatório para validator e qa; ' +
+            'o worktree precisa existir ainda (não ter sido descartado).'
+        ),
+      prompt: z
+        .string()
+        .optional()
+        .describe(
+          'A tarefa, escrita para o agente. Em validator/qa é opcional e vira a spec julgada — ' +
+            'sem ela, usa-se o prompt do próprio run alvo.'
+        ),
       repo: repoArg,
-      mode: z.enum(['ro', 'verify', 'rw', 'full']).default('ro'),
+      mode: z.enum(['ro', 'verify', 'rw', 'full']).default('ro')
+        .describe('Só vale para role agent: validator e qa têm modo próprio e o ignoram.'),
       isolation: z
         .enum(['worktree', 'shared'])
         .default('worktree')
         .describe('shared roda no próprio repositório, sem isolamento — use com cuidado.'),
       model: z.string().optional().describe('Veja honeycomb_models; no Kiro muda muito o preço.'),
+      browser: z
+        .enum(['agent-browser', 'chrome-devtools', 'none'])
+        .optional()
+        .describe('Só em role qa. Leia o aviso devolvido: a escolha pode ter sido rebaixada.'),
+      startCommand: z.string().optional().describe('Só em role qa: como subir o projeto.'),
+      baseUrl: z.string().optional().describe('Só em role qa: onde a aplicação responde.'),
       wait: waitArg,
     },
   },
-  guard(async ({ tool, prompt, repo, mode, isolation, model, wait }, extra) => {
-    const { runId } = await call('POST', '/api/runs', {
-      tool, prompt, repo, mode, isolation, model, label: oneLine(prompt, 50),
-    });
+  guard(async (args, extra) => {
+    const { tool, prompt, repo, mode, isolation, model, role, of, browser, startCommand, baseUrl, wait } = args;
+    if (role !== 'agent' && !of) throw new Error(`role "${role}" exige "of" (id do run alvo)`);
+    if (role === 'agent' && !prompt) throw new Error('role "agent" exige "prompt"');
+
+    const body =
+      role === 'agent'
+        ? { tool, prompt, repo, mode, isolation, model, label: oneLine(prompt, 50) }
+        : { tool, role, of, spec: prompt || null, model, browser, startCommand, baseUrl };
+
+    const { runId, note } = await call('POST', '/api/runs', body);
+    // the browser may have been downgraded; that has to reach whoever asked
+    const warn = note ? `\n! ${note}` : '';
     if (!wait) {
-      return text(`run ${runId} disparado. Acompanhe com honeycomb_status.`);
+      return text(`run ${runId} disparado. Acompanhe com honeycomb_status.${warn}`);
     }
-    return text(runSummary(await followRun(runId, extra)));
+    return text(runSummary(await followRun(runId, extra)) + warn);
   })
 );
 
@@ -601,6 +641,53 @@ server.registerTool(
     });
     if (!wait) return text(`task ${task.id} disparada. Acompanhe com honeycomb_status.`);
     return text(await withTaskOutput(await followTask(task.id, extra)));
+  })
+);
+
+server.registerTool(
+  'honeycomb_restart',
+  {
+    title: 'Retomar um fluxo que quebrou',
+    description:
+      'Refaz só os passos que não concluíram, reaproveitando os worktrees já produzidos. ' +
+      'É a resposta para o fluxo que morreu por motivo que não é do código — limite de gasto, ' +
+      'rate limit, daemon reiniciado — depois que a implementação já foi escrita e paga: sem isto ' +
+      'a única saída era um cross novo, que reimplementa o que já existe. Consulte antes com ' +
+      'plan: true para ver o que seria reaproveitado e o que seria pago de novo. Um passo ' +
+      'REPROVADO também é refeito, e sobre código inalterado ele tende a reprovar de novo — ' +
+      'só vale a pena se você mexeu no worktree por fora.',
+    inputSchema: {
+      id: z.string().describe('Id da task.'),
+      plan: z
+        .boolean()
+        .default(false)
+        .describe('true só mostra o que aconteceria, sem disparar nada nem gastar.'),
+      wait: waitArg,
+    },
+  },
+  guard(async ({ id, plan, wait }, extra) => {
+    const preview = await call('GET', `/api/tasks/${id}/restart`);
+    const lines = [
+      `task ${preview.taskId} — ${preview.title}`,
+      `reaproveita: ${preview.keep.join(', ') || '(nada)'}`,
+      `refaz:       ${preview.rerun.map((r) => `${r.id} (${r.status})`).join(', ') || '(nada)'}`,
+      ...preview.missing.map(
+        (m) => `! "${m.stepId}" precisa do worktree de "${m.from}": ${m.reason}`
+      ),
+    ];
+
+    if (plan) return text(lines.join('\n'));
+    if (!preview.rerun.length) return fail('nada a refazer: todos os passos ja concluiram');
+    if (preview.missing.length) {
+      return fail(
+        `${lines.join('\n')}\n\nO codigo que seria reaproveitado nao esta mais no disco. ` +
+          'Rode a task inteira de novo, ou crie um cross novo.'
+      );
+    }
+
+    await call('POST', `/api/tasks/${id}/restart`);
+    if (!wait) return text(`${lines.join('\n')}\n\nRetomada disparada. Acompanhe com honeycomb_status.`);
+    return text(`${lines.join('\n')}\n\n${await withTaskOutput(await followTask(id, extra))}`);
   })
 );
 

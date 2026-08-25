@@ -74,6 +74,10 @@ export const STEP_META = {
  */
 export function stepRole(stepId) {
   if (!stepId) return null;
+  // a standalone role run has no step id, only a role: `validator` is the same
+  // job `review` does inside a flow, and it earns the same chip
+  if (stepId === 'validator') return 'review';
+  if (stepId === 'agent') return null;
   if (stepId === 'review' || stepId === 'qa' || stepId === 'judge') return stepId;
   if (stepId === 'impl' || stepId.startsWith('impl_')) return 'impl';
   return null;

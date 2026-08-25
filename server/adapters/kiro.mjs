@@ -1,6 +1,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BIN } from '../config.mjs';
+import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -119,7 +120,7 @@ export const kiro = {
 
     const child = spawn(BIN.kiro, args, {
       cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      ...SPAWN_OPTS,
       env: { ...process.env, ...(env || {}), NO_COLOR: '1', TERM: 'dumb' },
     });
 
@@ -200,8 +201,7 @@ export const kiro = {
       if (timeoutMs) {
         timer = setTimeout(() => {
           onEvent({ type: 'error', tool: 'kiro', text: `timeout apos ${timeoutMs}ms` });
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 5000);
+          killTreeHard(child);
         }, timeoutMs);
       }
 

@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { BIN } from '../config.mjs';
+import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -110,7 +111,7 @@ export const claude = {
 
     const child = spawn(BIN.claude, args, {
       cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      ...SPAWN_OPTS,
       env: { ...process.env, ...(env || {}), FORCE_COLOR: '0' },
     });
 
@@ -227,8 +228,7 @@ export const claude = {
       if (timeoutMs) {
         timer = setTimeout(() => {
           onEvent({ type: 'error', tool: 'claude', text: `timeout apos ${timeoutMs}ms` });
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 5000);
+          killTreeHard(child);
         }, timeoutMs);
       }
 

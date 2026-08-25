@@ -252,7 +252,11 @@ function RunRow({ run, active, onClick, nested = false }) {
     >
       <div className="flex items-center gap-2">
         <Cell className={`h-2.5 w-[9px] ${meta.dot}`} />
-        {run.stepId && <StepTag stepId={run.stepId} />}
+        {/* inside a flow the step id names the role; a standalone role run
+            carries `role` instead, and both deserve the same chip */}
+        {(run.stepId || (run.role && run.role !== 'agent')) && (
+          <StepTag stepId={run.stepId || run.role} />
+        )}
         <span className={`min-w-0 flex-1 truncate text-xs ${nested ? 'text-wax-700' : 'text-wax-200'}`}>
           {label}
         </span>
@@ -554,6 +558,16 @@ export default function App() {
               tasks={tasks}
               onRunTask={async (id) => {
                 await api.runTask(id);
+                refresh();
+              }}
+              onRestartTask={async (id) => {
+                try {
+                  await api.restartTask(id);
+                } catch (err) {
+                  // the daemon refuses when the work being reused is gone, and
+                  // the message names which step and why — surface it verbatim
+                  window.alert(err.message);
+                }
                 refresh();
               }}
               onOpenRun={openRun}

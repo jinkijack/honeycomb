@@ -34,6 +34,9 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
   const [qaNotes, setQaNotes] = useState('');
 
   const [tool, setTool] = useState('kiro');
+  // a run can play one of the flow's roles over work that already exists
+  const [role, setRole] = useState('agent');
+  const [ofRun, setOfRun] = useState('');
   const [prompt, setPrompt] = useState('');
   const [mode, setMode] = useState('ro');
   const [isolation, setIsolation] = useState('worktree');
@@ -96,11 +99,22 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
         setSpec('');
         setTitle('');
       } else {
-        const { runId } = await api.startRun({
-          tool, prompt, repo, mode, isolation,
-          model: model || undefined,
-          label: prompt.slice(0, 50),
-        });
+        const { runId, note } = await api.startRun(
+          role === 'agent'
+            ? {
+                tool, prompt, repo, mode, isolation,
+                model: model || undefined,
+                label: prompt.slice(0, 50),
+              }
+            : {
+                // mode, isolation and the prompt come from the role and the
+                // target: sending ours would contradict what the flow does
+                tool, role, of: ofRun.trim(),
+                spec: prompt.trim() || undefined,
+                model: model || undefined,
+              }
+        );
+        if (note) setErr(note);
         onCreated?.('run', { id: runId });
         setPrompt('');
       }
@@ -111,7 +125,14 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
     }
   };
 
-  const canSubmit = repo && (kind === 'cross' ? spec.trim() : prompt.trim()) && !busy;
+  const canSubmit =
+    repo &&
+    !busy &&
+    (kind === 'cross'
+      ? spec.trim()
+      : role === 'agent'
+        ? prompt.trim()
+        : ofRun.trim());
 
   return (
     <Card className="p-5">
@@ -263,7 +284,7 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
           </>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Ferramenta">
                 <Select value={tool} onChange={(e) => setTool(e.target.value)}>
                   {available.map((n) => (
@@ -271,28 +292,71 @@ export default function Composer({ repo, setRepo, tools, onCreated }) {
                   ))}
                 </Select>
               </Field>
-              <Field label="Permissão">
-                <Select value={mode} onChange={(e) => setMode(e.target.value)}>
-                  {MODES.map(([v, l]) => (
-                    <option key={v} value={v}>{l}</option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="Isolamento">
-                <Select value={isolation} onChange={(e) => setIsolation(e.target.value)}>
-                  <option value="worktree">worktree isolado</option>
-                  <option value="shared">direto no repo</option>
+              <Field label="Tipo" hint={role === 'agent' ? null : 'modo e diretório vêm do alvo'}>
+                <Select value={role} onChange={(e) => setRole(e.target.value)}>
+                  <option value="agent">tarefa livre</option>
+                  <option value="validator">validação de um run</option>
+                  <option value="qa">teste (QA) de um run</option>
                 </Select>
               </Field>
             </div>
 
+            {role === 'agent' ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Permissão">
+                  <Select value={mode} onChange={(e) => setMode(e.target.value)}>
+                    {MODES.map(([v, l]) => (
+                      <option key={v} value={v}>{l}</option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Isolamento">
+                  <Select value={isolation} onChange={(e) => setIsolation(e.target.value)}>
+                    <option value="worktree">worktree isolado</option>
+                    <option value="shared">direto no repo</option>
+                  </Select>
+                </Field>
+              </div>
+            ) : (
+              <Field
+                label="Run alvo"
+                hint={role === 'validator' ? 'roda em verify' : 'roda em full, no worktree do alvo'}
+              >
+                <Input
+                  value={ofRun}
+                  onChange={(e) => setOfRun(e.target.value)}
+                  placeholder="id do run cujo worktree será julgado"
+                />
+              </Field>
+            )}
+
             <ModelPicker tool={tool} value={model} onChange={setModel} />
 
-            <Field label="Prompt">
-              <Textarea rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="O que o agente deve fazer…" />
+            <Field
+              label={role === 'agent' ? 'Prompt' : 'Especificação julgada'}
+              hint={role === 'agent' ? null : 'opcional — sem isto, usa o prompt do run alvo'}
+            >
+              <Textarea
+                rows={role === 'agent' ? 8 : 4}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder={
+                  role === 'agent'
+                    ? 'O que o agente deve fazer…'
+                    : 'O que o trabalho deveria ter feito…'
+                }
+              />
             </Field>
 
-            {isolation === 'shared' && mode !== 'ro' && (
+            {role !== 'agent' && (
+              <p className="rounded-lg bg-wax-50/5 px-3 py-2 text-[11px] text-wax-600 ring-1 ring-comb-600 ring-inset">
+                {role === 'validator'
+                  ? 'Revisa o worktree daquele run em modo verify: executa a verificação do projeto, não escreve, e termina com VEREDITO.'
+                  : 'Sobe o projeto daquele worktree em portas reservadas e exercita o que mudou. O worktree precisa existir ainda.'}
+              </p>
+            )}
+
+            {role === 'agent' && isolation === 'shared' && mode !== 'ro' && (
               <p className="rounded-lg bg-ember/5 px-3 py-2 text-[11px] text-ember/90 ring-1 ring-ember/20 ring-inset">
                 Atenção: o agente vai escrever direto no seu working tree, misturando com alterações não commitadas.
               </p>

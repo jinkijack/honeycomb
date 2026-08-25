@@ -74,7 +74,22 @@ function StepRow({ step, onOpenRun }) {
   );
 }
 
-export default function TaskPanel({ tasks, onRunTask, onOpenRun }) {
+/**
+ * Whether a restart has anything to work with.
+ *
+ * Judged from the record alone — something finished, something did not — without
+ * asking the daemon whether the worktrees survived. That check needs the disk,
+ * and doing it per task on every render would be a request per card per refresh.
+ * Offering a button the server may refuse is the cheaper mistake: the refusal
+ * names the step and the reason, which is more than hiding the button ever says.
+ */
+function canRestart(task) {
+  if (!['failed', 'interrupted', 'blocked'].includes(task.status)) return false;
+  const kept = task.steps.filter((s) => s.status === 'done' && s.runId).length;
+  return kept > 0 && kept < task.steps.length;
+}
+
+export default function TaskPanel({ tasks, onRunTask, onRestartTask, onOpenRun }) {
   if (!tasks.length) {
     return (
       <Empty
@@ -106,11 +121,32 @@ export default function TaskPanel({ tasks, onRunTask, onOpenRun }) {
                 </p>
               )}
             </div>
-            {['pending', 'failed', 'done'].includes(task.status) && (
-              <Button variant="primary" className="shrink-0 whitespace-nowrap" onClick={() => onRunTask(task.id)}>
-                {task.status === 'pending' ? 'executar' : 're-executar'}
-              </Button>
-            )}
+            <div className="flex shrink-0 gap-2">
+              {canRestart(task) && (
+                <Button
+                  variant="primary"
+                  className="whitespace-nowrap"
+                  title="Refaz só os passos que não concluíram, reaproveitando os worktrees já produzidos"
+                  onClick={() => onRestartTask(task.id)}
+                >
+                  retomar
+                </Button>
+              )}
+              {['pending', 'failed', 'done'].includes(task.status) && (
+                <Button
+                  variant={canRestart(task) ? 'default' : 'primary'}
+                  className="whitespace-nowrap"
+                  title={
+                    task.status === 'pending'
+                      ? 'Executa a task'
+                      : 'Roda tudo de novo do zero, inclusive o que já tinha passado'
+                  }
+                  onClick={() => onRunTask(task.id)}
+                >
+                  {task.status === 'pending' ? 'executar' : 're-executar'}
+                </Button>
+              )}
+            </div>
           </div>
 
           <ul className="relative mt-3 border-l border-comb-600 pl-0">

@@ -8,7 +8,10 @@ import { toolStatus, adapters } from './adapters/index.mjs';
 import { bus, readRunLog } from './bus.mjs';
 import { runs, tasks } from './store.mjs';
 import { startRun, cancelRun, getRunDiff, commitRun, discardRun } from './runner.mjs';
-import { createTask, runTask, crossValidationTemplate, raceTemplate } from './orchestrator.mjs';
+import {
+  createTask, runTask, resumePlan, crossValidationTemplate, raceTemplate,
+} from './orchestrator.mjs';
+import { RUN_ROLES, buildRoleRun } from './roles.mjs';
 import { BROWSER_PRESETS, DEFAULT_BROWSER, resolveBrowser, probeAgentBrowser } from './qa.mjs';
 import { isGitRepo, repoRoot, listWorktrees, currentBranch, removeWorktree } from './worktree.mjs';
 import { inspectWorktrees, collect, scheduleGc } from './gc.mjs';
@@ -108,10 +111,37 @@ app.get('/api/runs/:id/diff', wrap(async (req, res) => {
 }));
 
 app.post('/api/runs', wrap(async (req, res) => {
-  const { tool, prompt, repo, cwd, isolation, mode, model, effort, sessionId, resume, label } = req.body;
+  const {
+    tool, prompt, repo, cwd, isolation, mode, model, effort, sessionId, resume, label,
+    // a run can play one of the flow's roles against work that already exists
+    role = 'agent', of = null, spec = null, verifyCommands = null,
+    browser, startCommand = null, baseUrl = null, notes = null,
+  } = req.body;
+
   if (!tool) throw new Error('the "tool" field is required');
-  if (!prompt) throw new Error('the "prompt" field is required');
   if (!adapters[tool]) throw new Error(`ferramenta desconhecida: ${tool}`);
+  if (!RUN_ROLES.includes(role)) {
+    throw new Error(`papel desconhecido: ${role} (use ${RUN_ROLES.join(', ')})`);
+  }
+
+  /**
+   * The role builds everything: prompt, mode, directory, ports, browser. None of
+   * it is taken from the request — a client that could hand us its own `env` or
+   * `mcpServers` would be choosing what a full-autonomy agent gets to see, and
+   * the point of the role is that those choices are the same ones the flow makes.
+   */
+  if (role !== 'agent') {
+    const plan = await buildRoleRun({
+      role, of, tool, spec: spec || prompt || null, model,
+      verifyCommands, browser, startCommand, baseUrl, notes,
+    });
+    const { note, targetRunId, ...runArgs } = plan;
+    const { runId } = await startRun({ ...runArgs, label: label || plan.label });
+    runs.patch(runId, { role, targetRunId, note: note || null });
+    return res.status(202).json({ runId, role, targetRunId, note: note || null });
+  }
+
+  if (!prompt) throw new Error('the "prompt" field is required');
 
   const target = repo || cwd;
   if (!target) throw new Error('informe "repo" ou "cwd"');
@@ -122,7 +152,8 @@ app.post('/api/runs', wrap(async (req, res) => {
   const { runId } = await startRun({
     tool, prompt, repo: target, cwd, isolation, mode, model, effort, sessionId, resume, label,
   });
-  res.status(202).json({ runId });
+  runs.patch(runId, { role: 'agent' });
+  res.status(202).json({ runId, role: 'agent' });
 }));
 
 app.post('/api/runs/:id/cancel', (req, res) => {
@@ -323,6 +354,30 @@ app.post('/api/tasks/:id/run', wrap(async (req, res) => {
   if (!task) throw new Error('task nao encontrada');
   runTask(task.id).catch((err) => console.error('[task]', err.message));
   res.status(202).json({ started: true, taskId: task.id });
+}));
+
+/** What a restart would keep and what it would pay for again. */
+app.get('/api/tasks/:id/restart', wrap(async (req, res) => {
+  res.json(resumePlan(req.params.id));
+}));
+
+/**
+ * Restart from where the flow broke, reusing the worktrees already produced.
+ *
+ * The plan is computed before firing so a failure to resume — a discarded
+ * worktree, nothing worth keeping — is an error the caller sees, instead of a
+ * task that quietly flips to running and dies a second later.
+ */
+app.post('/api/tasks/:id/restart', wrap(async (req, res) => {
+  const plan = resumePlan(req.params.id);
+  if (!plan.rerun.length) throw new Error('nada a refazer: todos os passos ja concluiram');
+
+  const started = runTask(req.params.id, { resume: true });
+  started.catch((err) => console.error('[task]', err.message));
+  // let a synchronous rejection (discarded worktree) surface as a 400
+  await Promise.race([started, new Promise((r) => setTimeout(r, 150))]);
+
+  res.status(202).json({ started: true, taskId: req.params.id, ...plan });
 }));
 
 /* ----------------------------------------------------------------- static -- */

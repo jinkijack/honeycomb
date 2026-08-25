@@ -33,6 +33,8 @@ costs twice.
 | ...and it matters that it works when run | `honeycomb_cross` with `qa: true` |
 | a task on one tool, no review | `honeycomb_run` |
 | the task has genuine design ambiguity | `honeycomb_race` |
+| a flow that broke partway | `honeycomb_restart` |
+| review or test work that already exists | `honeycomb_run` with `role` |
 | a question about work that already ran | `honeycomb_status` |
 
 `cross` is the default. `race` costs N× and returns a choice, not a sum — only
@@ -86,6 +88,34 @@ sending long work there, check `honeycomb_models`. Cursor encodes effort and spe
 in the model id itself (`-low`/`-high`/`-xhigh`, `-fast`), so the choice there is
 the same knob under another name. For a cheap review of an
 expensive implementation (or the reverse), `cross` accepts a model per role.
+
+## When a flow breaks partway
+
+Steps die for reasons that are nobody's fault — a rate limit, a spend ceiling,
+the daemon restarting. `honeycomb_restart` keeps every step that finished and
+re-runs the rest, so the reviewer re-enters the implementer's worktree instead of
+a new one. Reach for it before proposing a fresh `cross`: re-running the flow
+pays for an implementation that already exists.
+
+Call it with `plan: true` first and show the user what would be reused and what
+would be paid for again. It refuses when the work being reused was discarded —
+that refusal is correct, not a bug to route around, because the alternative is a
+verdict issued on the wrong tree.
+
+A `rejected` step re-runs too. Over unchanged code it will reject again, so it is
+only worth it when something actually changed — you or the user edited the
+worktree by hand.
+
+## Running one step on its own
+
+`honeycomb_run` takes a `role`: `validator` reviews the worktree of the run named
+in `of`, `qa` boots that project and exercises it. The prompt, the permission mode
+and the directory come from the target, not from you — that is what makes a review
+fired by hand comparable to one inside a `cross`.
+
+Use it to get a second opinion from a different tool on work already done, or to
+test something that was implemented without QA. `of` is required and its worktree
+must still exist.
 
 ## Reading the result
 

@@ -85,6 +85,9 @@ honeycomb tools                              # tools and sessions
 honeycomb run kiro "..." --mode full --wait  # fire and block
 honeycomb cross "<spec>" --wait              # implement and validate
 honeycomb cross "<spec>" --qa --wait         # ...and test it running
+honeycomb restart <taskId> --wait            # redo only what did not finish
+honeycomb run claude --as validator --of <runId>   # review that run's worktree
+honeycomb run claude --as qa --of <runId>          # boot it and test it
 honeycomb diff <runId> --full                # worktree diff
 honeycomb commit <runId>                     # commit on the agent's branch
 ```
@@ -150,6 +153,36 @@ project builds, checks and tests itself — reading the CI workflow first (the o
 piece of documentation that cannot be stale, because it runs), then the manifest,
 the Makefile and the README. Pin them with `--verify "cmd1;cmd2"` when you want
 exactly those and nothing else.
+
+**A flow that breaks is not a flow you pay for twice.** The steps die for reasons
+that have nothing to do with the code — a rate limit, a spend ceiling, the daemon
+restarting — and until there was a way back, the only option was a fresh `cross`
+that re-implemented work already sitting in a worktree.
+
+```bash
+honeycomb restart <taskId>          # prints the plan, then resumes
+```
+
+It keeps every step that finished and re-runs the rest, so the reviewer re-enters
+the implementer's worktree rather than a new one. The plan is printed before
+anything is fired — this exists to save money, and hiding which steps it is about
+to pay for again would be a poor trade. It refuses outright when the work being
+reused is gone: a discarded worktree would send the reviewer to the repo root and
+have it issue a verdict on your checkout instead of the agent's work.
+
+**The same steps, one at a time.** `validator` and `qa` are roles a single run can
+play over work that already exists:
+
+```bash
+honeycomb run claude --as validator --of <runId>
+honeycomb run claude --as qa --of <runId> --start-cmd "make run"
+```
+
+The prompt, the permission mode and the working directory come from the target
+run — the same ones the flow would use — so a review fired by hand and a review
+inside a `cross` are comparable. `--of` is required and its worktree must still
+exist: the tester runs in `full`, which is safe in a worktree and is exactly what
+you never want pointed at your own checkout.
 
 **Correction loop.** When the reviewer rejects, it has already said exactly what
 is wrong — throwing that away and reimplementing from scratch wastes the most
@@ -412,10 +445,10 @@ entry there by hand:
 Those commands assume `npm link` has been run. Inside this repository the shipped
 `.mcp.json` already registers the server, no setup needed.
 
-There are 14 tools, from read-only shortcuts (`honeycomb_tools`,
+There are 15 tools, from read-only shortcuts (`honeycomb_tools`,
 `honeycomb_models`, `honeycomb_metrics`) to execution (`honeycomb_run`,
-`honeycomb_cross`, `honeycomb_race`) and consolidation (`honeycomb_diff`,
-`honeycomb_commit`).
+`honeycomb_cross`, `honeycomb_race`, `honeycomb_restart`) and consolidation
+(`honeycomb_diff`, `honeycomb_commit`).
 
 **Long calls are not a problem.** A `cross` with correction rounds runs past half
 an hour, and that fits the protocol for two reasons: an MCP client's default

@@ -4,7 +4,9 @@ import { emit } from './bus.mjs';
 import { startRun, getRunDiff } from './runner.mjs';
 import { checkBudget, taskSpend } from './budget.mjs';
 import { bus } from './bus.mjs';
+import fs from 'node:fs';
 import { commitWorktree } from './worktree.mjs';
+import { reviewPrompt } from './review.mjs';
 import { qaPrompt, reservePorts } from './qa.mjs';
 
 /**
@@ -158,10 +160,142 @@ export function createTask({ title, repo, steps, budget = null }) {
   return task;
 }
 
-export async function runTask(taskId) {
+/**
+ * Which steps a resume keeps, and what it needs from them.
+ *
+ * A step counts as reusable only if it finished AND the work it produced is
+ * still on disk. The second half is what makes this safe: `results[stepId]` is
+ * what every downstream `workdirFrom` resolves against, so a step whose worktree
+ * was discarded would send the reviewer into the repo root and have it review
+ * the user's own checkout instead of the agent's work — passing or failing on
+ * evidence from the wrong place.
+ */
+function seedCompleted(task) {
+  const seeded = {};
+
+  for (const step of task.steps) {
+    if (step.status !== 'done' || !step.runId) continue;
+    const run = runs.get(step.runId);
+    if (!run) continue;
+
+    seeded[step.id] = {
+      ok: true,
+      runId: run.id,
+      output: run.output,
+      worktree: run.worktree || null,
+      cost: run.cost ?? null,
+      tokens: run.tokens ?? null,
+    };
+  }
+
+  /**
+   * A step that will re-run and reads someone else's worktree needs that
+   * worktree to actually be there.
+   *
+   * Two ways it can be gone, and only one of them is obvious. The directory may
+   * have been deleted; but `discard` also sets `worktree: null` on the run
+   * record, so the seeded result looks merely worktree-less rather than broken.
+   * Both end the same way — `workdirFrom` finds nothing, the reviewer falls back
+   * to the repo root, and it issues a verdict on the user's checkout instead of
+   * on the agent's work. A resume that reviews the wrong tree is worse than one
+   * that refuses.
+   */
+  const missing = [];
+  for (const step of task.steps) {
+    if (seeded[step.id] || !step.workdirFrom) continue;
+    const src = seeded[step.workdirFrom];
+    const dir = src?.worktree?.dir;
+    if (!src) {
+      missing.push({ stepId: step.id, from: step.workdirFrom, reason: 'nao concluiu' });
+    } else if (!dir) {
+      missing.push({ stepId: step.id, from: step.workdirFrom, reason: 'worktree descartado' });
+    } else if (!fs.existsSync(dir)) {
+      missing.push({ stepId: step.id, from: step.workdirFrom, reason: `nao existe em ${dir}` });
+    }
+  }
+
+  return { seeded, missing };
+}
+
+/**
+ * What a resume would do, without doing it.
+ *
+ * Re-running a step costs money, so the decision belongs to whoever is asking:
+ * every surface shows this before firing.
+ */
+export function resumePlan(taskId) {
+  const task = tasks.get(taskId);
+  if (!task) throw new Error('task nao encontrada');
+
+  const { seeded, missing } = seedCompleted(task);
+  const keep = task.steps.filter((s) => seeded[s.id]).map((s) => s.id);
+  const rerun = task.steps.filter((s) => !seeded[s.id]).map((s) => ({
+    id: s.id,
+    tool: s.tool,
+    status: s.status,
+  }));
+
+  return { taskId, title: task.title, keep, rerun, missing };
+}
+
+export async function runTask(taskId, { resume = false } = {}) {
   const task = tasks.get(taskId);
   if (!task) throw new Error('task nao encontrada');
   if (task.status === 'running') throw new Error('task ja esta rodando');
+
+  const results = {};
+  const finished = new Set();
+  const failed = new Set();
+
+  /**
+   * Resume reuses everything that finished and re-runs the rest.
+   *
+   * The common case is the flow dying somewhere that is nobody's fault — a rate
+   * limit, a spend ceiling, the daemon going down — after the implementation was
+   * already written and paid for. Without this the only way back was a fresh
+   * `cross`, which re-implements code that already exists and throws away the
+   * worktree holding it.
+   *
+   * A `rejected` step is re-run too, and that is deliberate rather than an
+   * oversight: it is not a technical failure, so re-running it over unchanged
+   * code will almost certainly reject again — but a rejection you answered by
+   * editing the worktree yourself is exactly the case where you want the gate
+   * to look again. The plan says what will re-run before anything is spent.
+   */
+  if (resume) {
+    const { seeded, missing } = seedCompleted(task);
+    if (missing.length) {
+      throw new Error(
+        'nao da para retomar: ' +
+          missing.map((m) => `"${m.stepId}" precisa do worktree de "${m.from}" (${m.reason})`).join('; ') +
+          '. Rode a task inteira de novo, ou crie um cross novo.'
+      );
+    }
+    if (!Object.keys(seeded).length) {
+      throw new Error('nao ha nenhum passo concluido para reaproveitar — rode a task normalmente');
+    }
+    for (const [stepId, result] of Object.entries(seeded)) {
+      results[stepId] = result;
+      finished.add(stepId);
+    }
+    // anything not reused starts clean, so a stale `rejected` or `failed` from
+    // the previous attempt does not leak into this one's final status
+    for (const step of task.steps) {
+      if (finished.has(step.id)) continue;
+      Object.assign(step, {
+        status: 'pending',
+        runId: null,
+        verdict: null,
+        rounds: null,
+        retryRound: null,
+        commit: null,
+        error: null,
+        skipReason: null,
+      });
+    }
+    task.blockedBy = null;
+    taskEvents(taskId, { type: 'task_resumed', keep: [...finished], title: task.title });
+  }
 
   task.status = 'running';
   task.startedAt = Date.now();
@@ -170,9 +304,6 @@ export async function runTask(taskId) {
 
   const order = topoOrder(task.steps);
   const byId = new Map(task.steps.map((s) => [s.id, s]));
-  const results = {};
-  const finished = new Set();
-  const failed = new Set();
 
   const patchStep = (stepId, changes) => {
     const step = byId.get(stepId);
@@ -466,8 +597,10 @@ export async function runTask(taskId) {
   // makes the winner visible in the record as soon as the judge decides
   const persistWinner = () => tasks.put(task);
 
-  // runs in waves: everything with resolved dependencies runs in parallel
-  const pending = new Set(order);
+  // runs in waves: everything with resolved dependencies runs in parallel.
+  // Steps seeded by a resume are already `finished` and must not enter the
+  // queue, or the wave loop would happily re-run the work we kept them for.
+  const pending = new Set(order.filter((id) => !finished.has(id)));
   while (pending.size) {
     const ready = [...pending].filter((id) => {
       const step = byId.get(id);
@@ -568,25 +701,6 @@ export function crossValidationTemplate({
    */
   const commands = verifyCommands?.length ? verifyCommands : null;
 
-  /** What the reviewer is told when nobody named the commands. */
-  const discoverVerification = [
-    'Ninguem informou os comandos de verificacao deste projeto, entao descubra-os',
-    'antes de revisar. Este repo pode ser de qualquer stack — nao presuma nenhuma.',
-    '',
-    'Em ordem de confiabilidade:',
-    '',
-    '  1. `.github/workflows/*.yml` (ou outro CI): e a unica documentacao que nao',
-    '     pode estar desatualizada, porque ela roda.',
-    '  2. Os scripts do manifesto que existir: `package.json`, `pom.xml`,',
-    '     `build.gradle`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `*.csproj`,',
-    '     `Gemfile`, `composer.json`.',
-    '  3. `Makefile` / `Taskfile.yml` / `justfile`, e o README.',
-    '',
-    'Rode o que achar de build/compilacao, checagem estatica e testes. Se o projeto',
-    'nao tiver alguma dessas coisas, isso e um fato sobre o projeto e nao reprova —',
-    'diga que nao existe, nao invente um comando para poder dizer que falhou.',
-  ];
-
   return {
     title,
     repo,
@@ -635,50 +749,7 @@ export function crossValidationTemplate({
         // the reviewer runs in `verify` and writes nothing, so there is nothing
         // of its own to commit; the implementer's fixes are committed by the
         // implementer's own step
-        prompt: [
-          'Voce esta revisando o trabalho de outro agente, ja aplicado no worktree atual.',
-          '',
-          '## Tarefa original',
-          spec,
-          '',
-          '## Relato do implementador',
-          '{{steps.impl.output}}',
-          '',
-          '## Arquivos alterados',
-          '{{steps.impl.diff}}',
-          '',
-          '## Parte 1 — EXECUTE, nao apenas leia',
-          '',
-          'Os diretorios de dependencia do repo principal estao ligados por symlink',
-          'neste worktree, entao normalmente nao ha o que instalar.',
-          '',
-          ...(commands
-            ? ['Rode, nesta ordem:', '', ...commands.map((cmd) => `    ${cmd}`)]
-            : discoverVerification),
-          '',
-          'Se algum comando nao existir ou falhar por motivo pre-existente (quebrado',
-          'tambem na branch base), verifique isso comparando com o repo original e',
-          'diga explicitamente que e pre-existente. Se voce nao conseguir executar',
-          'algum passo, diga qual e por que — nunca presuma que passou.',
-          '',
-          'Se o build, a checagem estatica ou os testes falharem POR CAUSA desta',
-          'implementacao, o veredito e REPROVADO, independente da qualidade do codigo.',
-          '',
-          '## Parte 2 — revise o codigo',
-          '',
-          '1. A implementacao cumpre a tarefa?',
-          '2. Ha bug, regressao ou caso de borda nao tratado?',
-          '3. Segue os padroes do projeto? (verifique o padrao dominante no repo,',
-          '   nao apenas o arquivo alterado)',
-          '',
-          '## Formato da resposta',
-          '',
-          'Comece com um bloco "Verificacao executada" listando cada comando que voce',
-          'rodou e o resultado real (passou / falhou / nao consegui rodar e por que).',
-          'Depois a revisao de codigo. Termine com a linha exata:',
-          '',
-          'VEREDITO: APROVADO   (ou)   VEREDITO: REPROVADO',
-        ].join('\n'),
+        prompt: reviewPrompt({ spec, commands }),
         dependsOn: ['impl'],
       },
       ...(qa

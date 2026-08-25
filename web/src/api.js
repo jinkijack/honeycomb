@@ -38,6 +38,8 @@ export const api = {
   createTask: (payload) => req('POST', '/api/tasks', payload),
   crossValidation: (payload) => req('POST', '/api/tasks/cross-validation', payload),
   runTask: (id) => req('POST', `/api/tasks/${id}/run`),
+  restartPlan: (id) => req('GET', `/api/tasks/${id}/restart`),
+  restartTask: (id) => req('POST', `/api/tasks/${id}/restart`),
 };
 
 /** WebSocket with automatic reconnect — the daemon may restart during dev. */

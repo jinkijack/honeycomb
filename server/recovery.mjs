@@ -27,20 +27,36 @@ function processAlive(pid) {
   }
 }
 
+/**
+ * Kills the orphan and everything it forked.
+ *
+ * The persisted pid is the launcher's, and these CLIs run their real work in a
+ * child of it (`kiro-cli` → `kiro-cli-chat`). Signalling the pid alone leaves
+ * that worker alive with no daemon collecting its output — the exact orphan this
+ * function exists to clear. Runs are spawned `detached`, so the launcher leads
+ * its own group and the negative pid reaches the whole tree; the plain pid stays
+ * as a fallback for anything started before that was true.
+ */
 function killOrphan(pid) {
-  try {
-    process.kill(pid, 'SIGTERM');
-    setTimeout(() => {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // already dead
-      }
-    }, 3000);
-    return true;
-  } catch {
-    return false;
-  }
+  const signal = (target, sig) => {
+    try {
+      process.kill(target, sig);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const reached = signal(-pid, 'SIGTERM') || signal(pid, 'SIGTERM');
+  if (!reached) return false;
+
+  setTimeout(() => {
+    if (processAlive(pid)) {
+      if (!signal(-pid, 'SIGKILL')) signal(pid, 'SIGKILL');
+    }
+  }, 3000).unref?.();
+
+  return true;
 }
 
 export function reconcile() {

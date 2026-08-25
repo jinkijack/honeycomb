@@ -71,6 +71,23 @@ excess sits `queued`), worktree creation, retry on transient failure only (the
 persistence. States: `queued` → `preparing` → `running` →
 `done`/`failed`/`cancelled`/`blocked`/`interrupted`.
 
+**`proc.mjs`** — killing an agent means killing what it spawned. Every one of
+these CLIs is a launcher: `kiro-cli` forks `kiro-cli-chat`, and the grandchild is
+what works. `child.kill()` reaches only the direct child, so the worker survived
+every cancel and every timeout — still writing to the inherited pipe, so the
+daemon kept receiving events from a run it believed it had stopped, and still
+billing (a cancelled run was measured spending 4.92 credits over the 160s after
+the cancel). `SPAWN_OPTS` carries `detached: true` so the child leads its own
+process group, and `killTree` signals the negative pid to reach the whole group.
+Neither half works alone: without `detached` the child sits in the *daemon's*
+group, and signalling that group would kill the daemon. Every adapter spawns
+through `SPAWN_OPTS`, so none can forget.
+
+`runner.mjs` also keeps a `cancelled` set, because the process still has to close
+before the run finishes and by then the exit is non-zero — the close handler used
+to write `failed` over the `cancelled` the cancel had just set, collapsing "I
+stopped it" into "it broke".
+
 **`orchestrator.mjs`** runs a DAG of steps in waves (`topoOrder` validates cycles
 before persisting; everything with resolved dependencies runs in parallel). Two
 mechanisms carry the project's value:
@@ -114,6 +131,44 @@ tries anything. `STACKS` and `ENTRY_POINTS` in `qa.mjs` are the checklist it
 recognises the project by; they are a starting point handed to the agent, not a
 detector on Honeycomb's side. `PORT` is a Node convention, which is exactly the
 trap the port question exists to close.
+
+**`roles.mjs` + `review.mjs`** — the flow's steps, reachable one at a time.
+
+A `cross` is three roles wired into a graph, and for a long time the graph was
+the only way to reach two of them. That made the flow all-or-nothing: a QA step
+that died on a rate limit took the implementation down with it, because the only
+way to get a tester running again was to run the whole chain and pay for a fresh
+implementation of code that already existed.
+
+`buildRoleRun({ role, of, ... })` resolves a `validator` or `qa` run against work
+that already happened: prompt, mode, directory, ports and browser all come from
+the target run, never from the caller — a client that could hand us its own `env`
+or `mcpServers` would be choosing what a full-autonomy agent sees, and the point
+of a role is that those choices are the same ones the flow makes. `review.mjs`
+exists so the reviewer's prompt has one copy: the review inside a `cross` and the
+one you fire by hand at the same worktree have to ask for the same thing, or
+their verdicts are not comparable. Both prompt builders take the interpolation
+tokens as *defaults*, so the orchestrator fills them from step results and a
+standalone run passes real values in.
+
+`of` is required, and `resolveTarget` insists the worktree still exists. The
+tester runs in `full` — it writes, opens shells, boots servers. In a worktree
+that is the whole point; pointed at the user's own checkout it would be an agent
+with total autonomy in their working tree, which is the one thing this product
+exists to avoid.
+
+**`runTask(id, { resume: true })`** is the same idea at the graph level. It seeds
+`results` from the steps that already finished and re-runs the rest, so the
+reviewer re-enters the implementer's worktree instead of a new one. `resumePlan`
+answers what would be kept and what would be paid for again *without* firing —
+every surface shows it first, because avoiding a second implementation is the
+whole reason the feature exists. It refuses when a step that must re-run reads a
+worktree that is gone: `discard` sets `worktree: null` on the run, so the seeded
+result looks merely worktree-less rather than broken, and `workdirFrom` would
+quietly fall back to the repo root and review the user's checkout. A resume that
+reviews the wrong tree is worse than one that refuses. A `rejected` step re-runs
+too — over unchanged code it will reject again, which is only worth it if you
+edited the worktree yourself.
 
 **`qa.mjs`** — the optional third stage, `crossValidationTemplate({ qa: true })`,
 which turns the chain into `impl → review → qa`. The reviewer answers "is this
