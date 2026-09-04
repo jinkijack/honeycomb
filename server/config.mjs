@@ -22,9 +22,13 @@ export const BIN = {
   cursor: process.env.HONEYCOMB_CURSOR_BIN || path.join(os.homedir(), '.local/bin/cursor-agent'),
 };
 
-// Default per-step timeout. Coding agents take minutes; 20min is roomy enough
-// for real tasks without leaving a process stuck forever.
-export const DEFAULT_TIMEOUT_MS = Number(process.env.HONEYCOMB_TIMEOUT_MS || 20 * 60 * 1000);
+// Default per-step timeout. The ceiling is not about how long an agent thinks,
+// it is about how long the work takes: the QA stage boots the project, waits on
+// a real build and exercises flows against it, and 20min killed one mid-run on a
+// Java repo after it had already produced 79KB of test log. A stuck process is
+// still worse than a slow one, so there is a ceiling — just one sized for the
+// slowest stage rather than the fastest.
+export const DEFAULT_TIMEOUT_MS = Number(process.env.HONEYCOMB_TIMEOUT_MS || 90 * 60 * 1000);
 
 /**
  * How many agents may run at the same time.

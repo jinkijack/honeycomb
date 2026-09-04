@@ -550,7 +550,7 @@ should never be committed.
 | `HONEYCOMB_TASK_BUDGET` | `0` (off) |
 | `HONEYCOMB_DAILY_BUDGET` | `0` (off) |
 | `HONEYCOMB_TRANSIENT_RETRIES` | `2` |
-| `HONEYCOMB_TIMEOUT_MS` | `1200000` (20 min) |
+| `HONEYCOMB_TIMEOUT_MS` | `5400000` (90 min) |
 | `HONEYCOMB_CLAUDE_BIN` | `~/.local/bin/claude` |
 | `HONEYCOMB_KIRO_BIN` | `~/.local/bin/kiro-cli` |
 | `HONEYCOMB_CODEX_BIN` | `codex` |

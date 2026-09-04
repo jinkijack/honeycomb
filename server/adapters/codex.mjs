@@ -1,10 +1,10 @@
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BIN } from '../config.mjs';
-import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
+import { SPAWN_OPTS, killTreeHard, spawnWithPrompt } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -170,13 +170,19 @@ export const codex = {
     }
 
     if (resuming) args.push(sessionId);
-    args.push(prompt);
 
-    const child = spawn(BIN.codex, args, {
-      cwd,
-      ...SPAWN_OPTS,
-      env: { ...process.env, ...(env || {}), NO_COLOR: '1' },
-    });
+    /**
+     * Prompt on stdin, never argv: see `spawnWithPrompt`. Codex is the one that
+     * cannot take both — given a PROMPT argument *and* a piped stdin it appends
+     * the stdin as a separate `<stdin>` block, and the agent reads the whole
+     * thing twice.
+     */
+    const child = spawnWithPrompt(
+      BIN.codex,
+      args,
+      { cwd, ...SPAWN_OPTS, env: { ...process.env, ...(env || {}), NO_COLOR: '1' } },
+      prompt,
+    );
 
     let sid = sessionId || null;
     let finalText = '';

@@ -261,6 +261,14 @@ export const cursor = {
 
     if (resume && sessionId) args.push('--resume', sessionId);
     if (model) args.push('--model', model);
+
+    /**
+     * The only adapter still putting the prompt in argv, which caps it at
+     * `MAX_ARG_STRLEN` (see `spawnWithPrompt`). `cursor-agent --help` documents
+     * no stdin at all, and the account it was to be verified on is over its
+     * usage limit, so the unverified guess is the riskier change here: argv is
+     * known to work, stdin is not.
+     */
     args.push(prompt);
 
     /**

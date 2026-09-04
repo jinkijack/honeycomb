@@ -1,9 +1,8 @@
-import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { BIN } from '../config.mjs';
-import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
+import { SPAWN_OPTS, killTreeHard, spawnWithPrompt } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -107,13 +106,14 @@ export const claude = {
     args.push(...permission);
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
-    args.push(prompt);
 
-    const child = spawn(BIN.claude, args, {
-      cwd,
-      ...SPAWN_OPTS,
-      env: { ...process.env, ...(env || {}), FORCE_COLOR: '0' },
-    });
+    // Prompt on stdin, never argv: see `spawnWithPrompt`.
+    const child = spawnWithPrompt(
+      BIN.claude,
+      args,
+      { cwd, ...SPAWN_OPTS, env: { ...process.env, ...(env || {}), FORCE_COLOR: '0' } },
+      prompt,
+    );
 
     let finalText = '';
     let cost = null;

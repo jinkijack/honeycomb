@@ -24,12 +24,44 @@
  * owns the pipes and still waits for `close`.
  */
 
+import { spawn } from 'node:child_process';
+
 /** Spawn options every adapter shares, so no adapter can forget the group. */
 export const SPAWN_OPTS = {
   detached: true,
   // stdin closed: with it open these CLIs sit waiting for extra input
   stdio: ['ignore', 'pipe', 'pipe'],
 };
+
+/**
+ * Spawns an agent with the prompt on stdin instead of in argv.
+ *
+ * argv is not a place to put a prompt. Linux caps a *single* argument at
+ * `MAX_ARG_STRLEN` — 32 pages, 131072 bytes — no matter how much larger
+ * `ARG_MAX` is, and `execve` then refuses the whole call with `E2BIG` before any
+ * process exists. That is not a hypothetical ceiling: a QA step carrying the
+ * implementer's report (106 KB) and the reviewer's (40 KB) died at 65ms with
+ * `attempts: 0`, after both of those had already been paid for. The failure is
+ * also invisible from the outside — it reads as "the QA step failed", with
+ * nothing pointing at the size of the prompt.
+ *
+ * Only stdin is a real fix. None of these CLIs takes a prompt file, so the
+ * alternative is a prompt that *points* at a file, and an agent that is told to
+ * go read its instructions may skim them, grep them, or read half — the
+ * templates are product behaviour, and they have to arrive whole.
+ *
+ * The pipe is opened and closed in the same breath. `SPAWN_OPTS` keeps stdin on
+ * `ignore` because these CLIs sit waiting for more input while it is open, and a
+ * pipe we never `end()` reproduces exactly that hang.
+ */
+export function spawnWithPrompt(bin, args, opts, prompt) {
+  const child = spawn(bin, args, { ...opts, stdio: ['pipe', 'pipe', 'pipe'] });
+  // An agent that exits before reading gives us EPIPE. That is the run failing
+  // on its own terms; an unhandled 'error' here would take the daemon with it.
+  child.stdin.on('error', () => {});
+  child.stdin.end(prompt);
+  return child;
+}
 
 /**
  * Signals the child's whole process group, falling back to the child alone.

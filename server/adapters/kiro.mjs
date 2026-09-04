@@ -1,7 +1,7 @@
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BIN } from '../config.mjs';
-import { SPAWN_OPTS, killTreeHard } from '../proc.mjs';
+import { SPAWN_OPTS, killTreeHard, spawnWithPrompt } from '../proc.mjs';
 
 const exec = promisify(execFile);
 
@@ -100,7 +100,6 @@ export const kiro = {
     else if (resume) args.push('--resume');
     if (model) args.push('--model', model);
     if (effort) args.push('--effort', effort);
-    args.push(prompt);
 
     /**
      * Kiro takes no MCP configuration on the command line — it reads it from
@@ -118,11 +117,13 @@ export const kiro = {
       });
     }
 
-    const child = spawn(BIN.kiro, args, {
-      cwd,
-      ...SPAWN_OPTS,
-      env: { ...process.env, ...(env || {}), NO_COLOR: '1', TERM: 'dumb' },
-    });
+    // Prompt on stdin, never argv: see `spawnWithPrompt`.
+    const child = spawnWithPrompt(
+      BIN.kiro,
+      args,
+      { cwd, ...SPAWN_OPTS, env: { ...process.env, ...(env || {}), NO_COLOR: '1', TERM: 'dumb' } },
+      prompt,
+    );
 
     const textParts = [];
     let cost = null;
